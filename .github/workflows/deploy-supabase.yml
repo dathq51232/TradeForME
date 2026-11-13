@@ -1,6 +1,8 @@
 name: deploy-supabase
 # Applies migrations and deploys Edge Functions to the production Supabase project when main changes.
 # The web app is deployed by Vercel's Git integration (Root Directory = apps/web), not by this workflow.
+# Needs repository secrets SUPABASE_ACCESS_TOKEN (sbp_…) and SUPABASE_PROJECT_ID. SUPABASE_DB_PASSWORD is
+# optional: without it the CLI signs in through a temporary login role created with the access token.
 on:
   push:
     branches: [main]
@@ -24,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 3.1.0
       - name: Check configuration
         env:
           VAR_PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
@@ -32,21 +34,22 @@ jobs:
         run: |
           supabase --version
           ok=1
-          for n in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+          for n in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID; do
             if [ -z "${!n}" ]; then echo "::error::Secret $n is missing or empty"; ok=0; else echo "$n is set"; fi
           done
+          [ -n "$SUPABASE_DB_PASSWORD" ] && echo "SUPABASE_DB_PASSWORD is set" || echo "SUPABASE_DB_PASSWORD not set: using a temporary login role"
           if [ -n "$VAR_PROJECT_ID$VAR_ACCESS_TOKEN" ]; then
             echo "::error::Found these under Actions *Variables*; they must be *Secrets*."
           fi
-          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) ;; "") ;; *) echo "::error::SUPABASE_ACCESS_TOKEN should be a personal access token starting with sbp_"; ok=0;; esac
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*|"") ;; *) echo "::error::SUPABASE_ACCESS_TOKEN should be a personal access token starting with sbp_"; ok=0;; esac
           [ "$SUPABASE_PROJECT_ID" = "${SUPABASE_PROJECT_ID//[^a-z]/}" ] || { echo "::error::SUPABASE_PROJECT_ID should be the 20-letter project ref only, not a URL"; ok=0; }
           [ $ok = 1 ]
       - run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
       - name: Show pending migrations
-        run: supabase migration list
+        run: supabase migration list --remote
       - name: Apply migrations
-        run: supabase db push
+        run: supabase db push --remote --yes
       - name: Deploy Edge Functions
-        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+        run: supabase functions deploy --remote="$SUPABASE_PROJECT_ID" --use-api --yes
       - name: Smoke test
         run: curl -fsS "https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/health"
