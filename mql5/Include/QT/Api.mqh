@@ -124,6 +124,45 @@ public:
      }
   };
 
+//--- "QT1.<project-ref>.<token>.<secret>" (the dashboard's connection code) -> url, token, secret
+bool QTParseConnection(string code, string &url, string &token, string &secret)
+  {
+   StringTrimLeft(code);
+   StringTrimRight(code);
+   string p[];
+   if(StringSplit(code, '.', p) != 4 || p[0] != "QT1") return false;
+   if(StringLen(p[1]) < 10 || StringLen(p[2]) != 64 || StringLen(p[3]) != 64) return false;
+   url = "https://" + p[1] + ".supabase.co/functions/v1";
+   token = p[2];
+   secret = p[3];
+   return true;
+  }
+
+//--- configure from the connection code, or from the advanced inputs when no code is given; "" = ok
+string QTSetup(CQTApi &api, const string code, const string url, const string token, const string secret)
+  {
+   string u = url, t = token, s = secret;
+   if(StringLen(code) > 0 && !QTParseConnection(code, u, t, s))
+      return "Mã kết nối không đúng. Chép lại nguyên dòng bắt đầu bằng QT1. từ trang Tài khoản MT5.";
+   api.Init(u, t, s);
+   if(!api.Configured()) return "Chưa có mã kết nối. Dán mã từ trang Tài khoản MT5 vào ô \"Mã kết nối\".";
+   return "";
+  }
+
+//--- first call at start-up: explains the usual setup mistakes in plain words
+bool QTStartupCheck(CQTApi &api, const string who)
+  {
+   string resp;
+   int code = api.Post("/ct-heartbeat", QTHeartbeatBody(""), 8000, resp);
+   if(code == 200) { Print(who, ": đã kết nối máy chủ"); return true; }
+   if(code == -1) Alert(who, ": ", api.lastError);
+   else if(code == 401) Alert(who, ": máy chủ từ chối (", api.lastError, "). Mã kết nối sai hoặc đã được cấp lại; nếu báo CLOCK_SKEW thì chỉnh lại đồng hồ máy.");
+   else if(code == 403) Alert(who, ": ", api.lastError);
+   else if(code == 426) Alert(who, ": cần tải bản EA mới. ", api.lastError);
+   else Alert(who, ": lỗi máy chủ ", code, " ", api.lastError);
+   return false;
+  }
+
 //--- live account state for /ct-heartbeat (both EAs)
 string QTHeartbeatBody(const string lastError)
   {

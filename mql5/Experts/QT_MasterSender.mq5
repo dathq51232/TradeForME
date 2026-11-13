@@ -12,13 +12,15 @@
 
 #include <QT\Api.mqh>
 
-input string InpApiUrl        = "https://<project-ref>.supabase.co/functions/v1"; // API URL
-input string InpToken         = "";      // EA token (from the dashboard)
-input string InpSecret        = "";      // HMAC secret (from the dashboard)
+input string InpConnection   = "";      // Mã kết nối (dán từ trang Tài khoản MT5)
 input string InpBarSymbols    = "XAUUSD=XAUUSD,XAGUSD=XAGUSD,WTI=USOIL,BRENT=UKOIL"; // chart symbol=this broker's symbol; empty = do not send prices
 input int    InpSnapshotSec   = 30;      // position snapshot for reconciliation (s)
 input int    InpHeartbeatSec  = 30;      // heartbeat (s)
 input long   InpMagicFilter   = -1;      // copy only positions with this magic (-1 = all)
+input group "Nâng cao (để trống nếu đã có mã kết nối)"
+input string InpApiUrl       = "";      // API URL
+input string InpToken        = "";      // EA token
+input string InpSecret       = "";      // HMAC secret
 
 CQTApi   g_api;
 string   g_queue[];                      // pending event JSON objects, oldest first
@@ -35,10 +37,10 @@ string QueueFile(void) { return StringFormat("QT_master_queue_%I64d.txt", g_logi
 int OnInit()
   {
    g_login = AccountInfoInteger(ACCOUNT_LOGIN);
-   g_api.Init(InpApiUrl, InpToken, InpSecret);
-   if(!g_api.Configured())
+   string setupError = QTSetup(g_api, InpConnection, InpApiUrl, InpToken, InpSecret);
+   if(setupError != "")
      {
-      Alert("QT Master: điền API URL (https://...), EA token và HMAC secret (64 ký tự) từ dashboard.");
+      Alert("QT Master: ", setupError);
       return INIT_PARAMETERS_INCORRECT;
      }
    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
@@ -46,7 +48,7 @@ int OnInit()
    ParseBarMap();
    LoadQueue();
    EventSetTimer(1);
-   Heartbeat();
+   if(QTStartupCheck(g_api, "QT Master")) g_lastHeartbeat = TimeLocal();
    return INIT_SUCCEEDED;
   }
 

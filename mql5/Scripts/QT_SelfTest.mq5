@@ -34,6 +34,12 @@ void OnStart()
    string secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
    Check(QTHmacSha256Hex(secret, "1794567890000\n{\"events\":[{\"type\":\"KILL\"}]}") == "646ff1c070098e6a2ccf658c71c8b943c76fb18a089ea4e3b891a058184218d2", "HMAC matches server");
 
+   // connection code from the dashboard
+   string cu, ct, cs;
+   string code = "QT1.abcdefghijklmnopqrst." + secret + "." + secret;
+   Check(QTParseConnection(" " + code + " ", cu, ct, cs) && cu == "https://abcdefghijklmnopqrst.supabase.co/functions/v1" && ct == secret && cs == secret, "connection code");
+   Check(!QTParseConnection("QT1.abc.def", cu, ct, cs), "bad connection code refused");
+
    // JSON
    CQJ j;
    Check(j.Parse("{\"a\":1.5,\"b\":\"x\\\"y\",\"c\":[1,{\"d\":true}],\"e\":null,\"seq\":1234567890123}"), "JSON parse");

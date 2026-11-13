@@ -15,7 +15,7 @@
     "lint": "npm run lint -w @qt/web",
     "typecheck": "npm run typecheck -w @qt/web",
     "test": "npm test -w @qt/core -w @qt/shared && npm run test:db",
-    "test:db": "node supabase/tests/pglite.mjs && node --test \"supabase/functions/_shared/*.test.ts\""
+    "test:db": "node mql5/build.mjs --check && node supabase/tests/pglite.mjs && node --test \"supabase/functions/_shared/*.test.ts\""
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.16"

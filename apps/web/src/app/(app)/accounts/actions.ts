@@ -3,7 +3,18 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser, withMsg } from "@/lib/auth";
 
-export type IssuedToken = { error?: string; accountId?: string; token?: string; secret?: string; label?: string };
+export type IssuedToken = {
+  error?: string; accountId?: string; token?: string; secret?: string; label?: string;
+  role?: "master" | "receiver";
+  /** "QT1.<project-ref>.<token>.<secret>": the one value pasted into the EA. */
+  connection?: string;
+};
+
+/** Project ref from NEXT_PUBLIC_SUPABASE_URL (https://<ref>.supabase.co). */
+function connectionCode(token: string, secret: string) {
+  const host = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://unknown.supabase.co").hostname;
+  return `QT1.${host.split(".")[0]}.${token}.${secret}`;
+}
 
 /** Registers an MT5 account and returns the EA token + HMAC secret once. No MT5 password is asked for. */
 export async function addAccount(_prev: IssuedToken, form: FormData): Promise<IssuedToken> {
@@ -24,7 +35,10 @@ export async function addAccount(_prev: IssuedToken, form: FormData): Promise<Is
     return { error: error.code === "23505" ? "Tài khoản này (server + login) đã được đăng ký." : error.message };
   }
   revalidatePath("/accounts");
-  return { accountId: data.account_id, token: data.ea_token, secret: data.hmac_secret, label };
+  return {
+    accountId: data.account_id, token: data.ea_token, secret: data.hmac_secret, label,
+    role: role as "master" | "receiver", connection: connectionCode(data.ea_token, data.hmac_secret),
+  };
 }
 
 export async function rotateToken(_prev: IssuedToken, form: FormData): Promise<IssuedToken> {
@@ -33,7 +47,10 @@ export async function rotateToken(_prev: IssuedToken, form: FormData): Promise<I
   const { data, error } = await supabase.rpc("rotate_mt5_token", { p_account: id })
     .single<{ ea_token: string; hmac_secret: string }>();
   if (error) return { error: error.message };
-  return { accountId: id, token: data.ea_token, secret: data.hmac_secret, label: String(form.get("label") ?? "") };
+  return {
+    accountId: id, token: data.ea_token, secret: data.hmac_secret, label: String(form.get("label") ?? ""),
+    role: form.get("role") === "master" ? "master" : "receiver", connection: connectionCode(data.ea_token, data.hmac_secret),
+  };
 }
 
 export async function setDisabled(form: FormData) {

@@ -9,21 +9,18 @@
 
 Quy tắc tính lot, ánh xạ symbol, bộ lọc và rủi ro là bản chuyển từ `packages/shared/src/copytrade.js`. Hai bên phải cho cùng kết quả; `QT_SelfTest` chạy lại các ví dụ trong test JS.
 
-## Cài đặt
+## Cài đặt (cách nhanh)
 
-1. Trong MT5: **File → Open Data Folder**, chép thư mục `Experts`, `Include`, `Scripts` này vào thư mục `MQL5`.
-2. Mở MetaEditor, biên dịch `QT_SelfTest.mq5`, `QT_MasterSender.mq5`, `QT_Receiver.mq5` (F7). Phải không có lỗi.
-3. Kéo `QT_SelfTest` vào một chart; tab **Experts** phải ghi `QT self-test: tất cả OK`.
-4. **Tools → Options → Expert Advisors**: bật *Allow algorithmic trading*, thêm vào *Allow WebRequest for listed URL*:
-   `https://<project-ref>.supabase.co`
-5. Trên dashboard → **Tài khoản MT5** → tạo tài khoản, chép **EA token** và **HMAC secret** (chỉ hiện một lần).
-6. Gắn EA vào **một** chart (mỗi terminal một tài khoản, một EA):
-   - `InpApiUrl` = `https://<project-ref>.supabase.co/functions/v1`
-   - `InpToken`, `InpSecret` = giá trị vừa chép.
-7. Sau vài giây, dashboard hiện tài khoản **Online**, kèm loại tài khoản (Hedging/Netting), balance, equity.
-8. Ở trang **Copy Trading**: thêm receiver vào group của master, kiểm tra cấu hình, bật receiver, rồi bấm **Chạy**.
+1. Dashboard → **Tài khoản MT5** → tạo tài khoản. Web hiện **mã kết nối** (một dòng `QT1.…`, chỉ hiện một lần), nút **Chép mã**, link tải EA và file `.set`.
+2. Tải `QT_MasterSender.mq5` hoặc `QT_Receiver.mq5` (mỗi EA là **một file**, đã gộp sẵn thư viện). Trong MT5: **File → Open Data Folder → MQL5/Experts**, chép file vào, mở bằng MetaEditor và bấm **F7** (biên dịch một lần).
+3. **Tools → Options → Expert Advisors**: bật *Allow algorithmic trading*, thêm `https://<project-ref>.supabase.co` vào *Allow WebRequest*. MT5 bắt buộc bước này với mọi EA gọi mạng.
+4. Kéo EA vào **một** chart, dán mã vào ô **Mã kết nối** (hoặc bấm *Load* và chọn file `.set`).
+5. EA kiểm tra kết nối ngay khi khởi động. Nếu chưa cho phép WebRequest, mã sai hoặc đồng hồ lệch, MT5 hiện cảnh báo nói rõ lỗi gì. Kết nối được thì vài giây sau dashboard hiện tài khoản **Online**.
+6. Trang **Copy Trading**: thêm receiver vào group, kiểm tra cấu hình, bật receiver, rồi bấm **Chạy**.
 
-Đồng hồ máy chạy MT5 phải đúng (lệch tối đa 60 giây), vì máy chủ từ chối yêu cầu có thời gian lệch để chống phát lại.
+Nên chạy script `QT_SelfTest.mq5` (chép vào `MQL5/Scripts`) một lần trước: tab Experts phải ra `QT self-test: tất cả OK`.
+
+File tải về được sinh từ `Experts/`, `Scripts/` và `Include/QT/` bằng `node mql5/build.mjs` (UTF-8 có BOM để MetaEditor đọc đúng tiếng Việt). Sửa mã nguồn thì chạy lại lệnh đó; `npm test` báo lỗi nếu quên. Mục **Nâng cao** trong EA (API URL, token, secret riêng) chỉ dùng khi không có mã kết nối.
 
 ## Cách hoạt động
 

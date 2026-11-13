@@ -67,7 +67,7 @@ async function Accounts({ searchParams }: { searchParams: PageProps<"/accounts">
                       </td>
                       <td className={`${td} text-xs text-muted`}>{ago(a.last_heartbeat_at, now)}{a.ea_version && <div>EA {a.ea_version}</div>}</td>
                       <td className={`${td} space-y-1 text-right`}>
-                        <RotateTokenForm id={a.id} label={a.label} />
+                        <RotateTokenForm id={a.id} label={a.label} role={a.role} />
                         <form action={setDisabled}>
                           <input type="hidden" name="id" value={a.id} />
                           <input type="hidden" name="disabled" value={String(!a.disabled)} />

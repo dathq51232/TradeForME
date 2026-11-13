@@ -18,12 +18,14 @@
 #include <QT\Api.mqh>
 #include <QT\Lot.mqh>
 
-input string InpApiUrl       = "https://<project-ref>.supabase.co/functions/v1"; // API URL
-input string InpToken        = "";      // EA token (from the dashboard)
-input string InpSecret       = "";      // HMAC secret (from the dashboard)
+input string InpConnection   = "";      // Mã kết nối (dán từ trang Tài khoản MT5)
 input int    InpPollWaitSec  = 20;      // long-poll wait (s, max 20)
 input int    InpHeartbeatSec = 30;      // heartbeat (s)
 input int    InpSnapshotMaxAgeSec = 15; // reconcile only against snapshots younger than this (s)
+input group "Nâng cao (để trống nếu đã có mã kết nối)"
+input string InpApiUrl       = "";      // API URL
+input string InpToken        = "";      // EA token
+input string InpSecret       = "";      // HMAC secret
 
 CQTApi   g_api;
 CTrade   g_trade;
@@ -44,14 +46,15 @@ CQJ     *g_links = NULL;
 int OnInit()
   {
    g_login = AccountInfoInteger(ACCOUNT_LOGIN);
-   g_api.Init(InpApiUrl, InpToken, InpSecret);
-   if(!g_api.Configured())
+   string setupError = QTSetup(g_api, InpConnection, InpApiUrl, InpToken, InpSecret);
+   if(setupError != "")
      {
-      Alert("QT Receiver: điền API URL (https://...), EA token và HMAC secret (64 ký tự) từ dashboard.");
+      Alert("QT Receiver: ", setupError);
       return INIT_PARAMETERS_INCORRECT;
      }
    LoadCursors();
    g_trade.SetAsyncMode(false);
+   if(QTStartupCheck(g_api, "QT Receiver")) g_lastHeartbeat = TimeLocal();
    EventSetTimer(1);
    return INIT_SUCCEEDED;
   }
