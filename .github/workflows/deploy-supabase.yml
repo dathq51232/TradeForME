@@ -33,7 +33,7 @@ jobs:
           supabase --version
           ok=1
           for n in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
-            if [ -z "${!n}" ]; then echo "::error::Secret $n is missing or empty"; ok=0; else echo "$n is set (${#SUPABASE_PROJECT_ID} chars for project id)"; fi
+            if [ -z "${!n}" ]; then echo "::error::Secret $n is missing or empty"; ok=0; else echo "$n is set"; fi
           done
           if [ -n "$VAR_PROJECT_ID$VAR_ACCESS_TOKEN" ]; then
             echo "::error::Found these under Actions *Variables*; they must be *Secrets*."
