@@ -57,6 +57,32 @@ select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000
 insert into public.copy_links (master_id, receiver_id, enabled)
 select (select v::uuid from t_ids where k = 'master'), (select v::uuid from t_ids where k = 'receiver'), true;
 
+-- linking created the master's copy group, paused by default; Alice starts it
+do $$ begin
+  assert (select state from public.copy_groups) = 'paused', 'a new group starts paused';
+  assert (select count(*) from public.copy_links where group_id is not null) = 1, 'link is assigned to the group';
+end $$;
+insert into t_ids select 'group', id::text from public.copy_groups;
+select public.copy_group_control((select v::uuid from t_ids where k = 'group'), 'start');
+
+-- ---- as Bob: he cannot control Alice's group ----
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-00000000000b","role":"authenticated"}', true);
+do $$ begin
+  assert (select count(*) from public.copy_groups) = 1, 'receiver owner sees the group';
+  assert (select mine from public.copy_group_receivers((select v::uuid from t_ids where k = 'group'))), 'Bob sees his receiver in the group';
+  begin
+    perform public.copy_group_control((select v::uuid from t_ids where k = 'group'), 'stop');
+    raise exception 'receiver owner must not control the group';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.copy_groups set state = 'running';
+    raise exception 'state must not be writable directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-00000000000a","role":"authenticated"}', true);
+
 -- anon sees no accounts and no unscored news
 set local role anon;
 do $$ begin
@@ -79,20 +105,71 @@ begin
   assert (select seq from public.ct_append_events(m, '[{"event_uid":"1001-DEAL-1","type":"OPEN","ts_ms":1}]'::jsonb)) = 1,
     'duplicate keeps its original seq';
   assert (select count(*) from public.ct_events where master_id = m) = 2, 'no duplicate rows';
-  select count(*) into n from public.ct_pull(r, m, 0);
-  assert n = 2, 'receiver pulls both events';
+  select count(*) into n from public.ct_pull(r, m, 0) where skip_reason is null;
+  assert n = 2, 'running group: receiver gets both events';
   select count(*) into n from public.ct_pull(r, m, 1);
   assert n = 1, 'pull is incremental';
   select count(*) into n from public.ct_pull(m, m, 0);
   assert n = 0, 'an unlinked account pulls nothing';
   assert (select count(*) from public.audit_log where action like 'copy_links.%') = 1, 'link creation is audited';
+
+  -- paused: exits still flow, opens are returned as skipped so the EA advances past them
+  update public.copy_groups set state = 'paused' where master_id = m;
+  assert (select skip_reason from public.ct_pull(r, m, 0) where seq = 1) = 'group_paused', 'paused group skips OPEN';
+  assert (select skip_reason from public.ct_pull(r, m, 1) where seq = 2) is null, 'paused group still delivers CLOSE';
+  -- global pause acts like paused
+  update public.copy_groups set state = 'running' where master_id = m;
+  update public.app_settings set value = 'true' where key = 'copy_global_pause';
+  assert (select skip_reason from public.ct_pull(r, m, 0) where seq = 1) = 'group_paused', 'global pause skips OPEN';
+  update public.app_settings set value = 'false' where key = 'copy_global_pause';
+  -- emergency: nothing but KILL
+  update public.copy_groups set state = 'emergency' where master_id = m;
+  select count(*) into n from public.ct_pull(r, m, 0) where skip_reason is null;
+  assert n = 0, 'emergency delivers nothing';
+end $$;
+
+-- ---- as Alice: leaving emergency needs a reason; Close All needs the group name ----
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-00000000000a","role":"authenticated"}', true);
+do $$
+declare g uuid := (select v::uuid from t_ids where k = 'group');
+begin
+  begin
+    perform public.copy_group_control(g, 'resume');
+    raise exception 'resume from emergency without reason must fail';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.copy_request_close_all(g, 'wrong name');
+    raise exception 'close all without the right name must fail';
+  exception when invalid_parameter_value then null;
+  end;
+  assert (select label from public.copy_group_receivers(g)) = 'Bob receiver', 'master owner sees receiver status';
+  assert (select count(*) from public.mt5_accounts) = 1, 'but not the receiver account row itself';
+  perform public.copy_request_close_all(g, 'Master XAU');
+  assert public.copy_pause_all() = 0, 'nothing running to pause';
+  perform public.copy_group_control(g, 'resume', 'checked positions');
+  assert public.copy_pause_all('end of day') = 1, 'pause all pauses the running group';
+end $$;
+
+reset role;
+do $$
+declare
+  m uuid := (select v::uuid from t_ids where k = 'master');
+  r uuid := (select v::uuid from t_ids where k = 'receiver');
+begin
+  update public.copy_groups set state = 'emergency' where master_id = m;
+  assert (select count(*) from public.ct_pull(r, m, 2) where payload ->> 'type' = 'KILL' and skip_reason is null) = 1,
+    'KILL reaches receivers even in emergency';
+  assert (select count(*) from public.audit_log where action like 'copy_groups.%') = 4,
+    'start, close_all, resume and pause_all are audited; failed attempts are not';
 end $$;
 
 -- ---- as Bob: he can read events of a master he is linked to ----
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-00000000000b","role":"authenticated"}', true);
 do $$ begin
-  assert (select count(*) from public.ct_events) = 2, 'linked receiver owner reads master events';
+  assert (select count(*) from public.ct_events) = 3, 'linked receiver owner reads master events (incl. KILL)';
   assert (select count(*) from public.copy_links) = 1, 'receiver owner sees the link';
 end $$;
 

@@ -1,0 +1,60 @@
+import { Suspense, type ReactNode } from "react";
+import Link from "next/link";
+import { Sidebar, SidebarNav } from "@/components/sidebar";
+import { Badge } from "@/components/ui";
+import { createClient } from "@/lib/supabase/server";
+import { requestTime } from "@/lib/auth";
+import { connection } from "@/lib/format";
+
+export default function AppLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-screen flex-col md:flex-row">
+      <aside className="border-b border-border bg-panel md:w-14 md:border-b-0 md:border-r lg:w-56">
+        <Link href="/dashboard" className="hidden items-center gap-2 px-4 py-3.5 md:flex">
+          <span className="grid h-6 w-6 place-items-center rounded bg-accent text-xs font-bold text-white">Q</span>
+          <span className="hidden text-sm font-semibold lg:inline">Quant Terminal</span>
+        </Link>
+        <Suspense fallback={<SidebarNav path="" />}>
+          <Sidebar />
+        </Suspense>
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-12 items-center justify-end gap-3 border-b border-border px-4">
+          <Suspense fallback={<span className="text-xs text-muted">…</span>}>
+            <TopBar />
+          </Suspense>
+        </header>
+        <main className="min-w-0 flex-1 p-4 lg:p-6">{children}</main>
+        <footer className="px-6 pb-4 text-xs text-muted">Không phải khuyến nghị đầu tư.</footer>
+      </div>
+    </div>
+  );
+}
+
+async function TopBar() {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  const userId = data?.claims?.sub;
+  if (!userId) return null;
+  const [{ data: profile }, { data: accounts }, { count: unread }] = await Promise.all([
+    supabase.from("profiles").select("full_name, role").eq("id", userId).maybeSingle(),
+    supabase.from("mt5_accounts").select("status, last_heartbeat_at, disabled, terminal_connected, trade_allowed"),
+    supabase.from("notifications").select("id", { count: "exact", head: true }).is("read_at", null),
+  ]);
+  const now = requestTime();
+  const online = (accounts ?? []).filter((a) => connection(a, now).online).length;
+  const total = accounts?.length ?? 0;
+  return (
+    <>
+      <Badge tone={total === 0 ? "muted" : online === total ? "up" : online === 0 ? "down" : "warn"}>
+        MT5 {online}/{total} online
+      </Badge>
+      <span className="text-xs text-muted" title="Thông báo chưa đọc">🔔 {unread ?? 0}</span>
+      <span className="text-sm">{profile?.full_name ?? "bạn"}</span>
+      {profile?.role && profile.role !== "user" && <Badge tone="accent">{profile.role}</Badge>}
+      <form action="/auth/signout" method="post">
+        <button className="text-xs text-muted hover:text-foreground">Đăng xuất</button>
+      </form>
+    </>
+  );
+}

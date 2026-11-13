@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CopyEvent, IngestBody, CopyLinkSettings, computeLot, mapSymbol, partialCloseVolume, isStale } from "../src/copytrade.js";
+import {
+  CopyEvent, IngestBody, CopyLinkSettings, computeLot, mapSymbol, partialCloseVolume, isStale,
+  deliverySkipReason, filterReason, riskPreCheck,
+} from "../src/copytrade.js";
 
 const vol = { min: 0.01, max: 100, step: 0.01 };
 const open = {
@@ -74,4 +77,60 @@ test("stale opens are refused but closes always apply", () => {
   assert.equal(isStale({ type: "OPEN", ts_ms: 1 }, 11_001, 10), true);
   assert.equal(isStale({ type: "OPEN", ts_ms: 1 }, 9_001, 10), false);
   assert.equal(isStale({ type: "CLOSE", ts_ms: 1 }, 999_000, 10), false);
+});
+
+test("balance_ratio scales by balance (design 7.4)", () => {
+  assert.deepEqual(computeLot({ mode: "balance_ratio", value: 1, masterLot: 0.5, masterBalance: 10000, receiverBalance: 5000, volume: vol }), { lot: 0.25 });
+  assert.deepEqual(computeLot({ mode: "balance_ratio", value: 1, masterLot: 0.5, volume: vol }), { skip: "BALANCE_UNKNOWN" });
+});
+
+test("design 7.4 example: multipliers 0.5x, 1x, 0.2x on a 0.50 lot master", () => {
+  const lots = [0.5, 1, 0.2].map((k) => computeLot({ mode: "multiplier", value: k, masterLot: 0.5, volume: vol }).lot);
+  assert.deepEqual(lots, [0.25, 0.5, 0.1]);
+});
+
+test("link min_lot is a floor: skip by default, raise with min_lot policy", () => {
+  const a = { mode: "multiplier", value: 0.1, masterLot: 0.5, volume: vol, minLot: 0.1 };
+  assert.deepEqual(computeLot(a), { skip: "BELOW_MIN_LOT" });
+  assert.deepEqual(computeLot({ ...a, belowMin: "min_lot" }), { lot: 0.1 });
+});
+
+test("delivery by group state matches ct_pull", () => {
+  assert.equal(deliverySkipReason("OPEN", "running", true), null);
+  assert.equal(deliverySkipReason("OPEN", "paused", true), "group_paused");
+  assert.equal(deliverySkipReason("CLOSE", "paused", true), null);
+  assert.equal(deliverySkipReason("CLOSE", "emergency", true), "group_emergency");
+  assert.equal(deliverySkipReason("KILL", "emergency", false), null);
+  assert.equal(deliverySkipReason("OPEN", "running", false), "receiver_disabled");
+  assert.equal(deliverySkipReason("OPEN", "running", true, true), "group_paused");
+});
+
+test("receiver filters", () => {
+  const s = CopyLinkSettings.parse({ enabled: true });
+  assert.equal(filterReason(open, s), null);
+  assert.equal(filterReason(open, { ...s, copy_buy: false }), "BUY_DISABLED");
+  assert.equal(filterReason(open, { ...s, copy_buy: false, reverse: true }), null, "reversed BUY becomes SELL");
+  assert.equal(filterReason(open, s, ["BTCUSD"]), "SYMBOL_NOT_ALLOWED");
+  assert.equal(filterReason({ type: "PENDING_PLACE", symbol: "XAUUSD", side: "BUY_LIMIT" }, s), "PENDING_DISABLED");
+  assert.equal(filterReason({ type: "PARTIAL_CLOSE" }, { ...s, copy_partial_close: false }), "PARTIAL_CLOSE_DISABLED");
+  assert.equal(filterReason({ type: "MODIFY" }, { ...s, copy_sl_tp: false }), "MODIFY_DISABLED");
+});
+
+test("risk pre-check: each limit, and the configured action", () => {
+  const settings = CopyLinkSettings.parse({
+    enabled: true, max_spread_points: 30, max_open_positions: 3, max_exposure_lots: 1,
+    max_daily_loss_pct: 5, max_drawdown_pct: 10, max_margin_usage_pct: 50, risk_action: "pause_receiver",
+  });
+  const ok = { settings, online: true, tradeAllowed: true, lot: 0.2, spreadPoints: 20, openPositions: 1, openLots: 0.3,
+    dayStartEquity: 10000, peakEquity: 10500, equity: 9900, margin: 1000, freeMarginAfter: 8000 };
+  assert.deepEqual(riskPreCheck(ok), { ok: true });
+  assert.deepEqual(riskPreCheck({ ...ok, online: false }), { ok: false, rule: "RECEIVER_OFFLINE", action: "reject" });
+  assert.equal(riskPreCheck({ ...ok, spreadPoints: 31 }).rule, "SPREAD_TOO_HIGH");
+  assert.equal(riskPreCheck({ ...ok, openPositions: 3 }).rule, "MAX_OPEN_POSITIONS");
+  assert.equal(riskPreCheck({ ...ok, openLots: 0.9 }).rule, "MAX_EXPOSURE");
+  assert.equal(riskPreCheck({ ...ok, equity: 9500 }).rule, "MAX_DAILY_LOSS");
+  assert.equal(riskPreCheck({ ...ok, peakEquity: 10500, dayStartEquity: 9400, equity: 9400 }).rule, "MAX_DRAWDOWN");
+  assert.equal(riskPreCheck({ ...ok, margin: 6000 }).rule, "MAX_MARGIN_USAGE");
+  assert.equal(riskPreCheck({ ...ok, freeMarginAfter: -1 }).rule, "INSUFFICIENT_MARGIN");
+  assert.equal(riskPreCheck({ ...ok, spreadPoints: 31 }).action, "pause_receiver");
 });
