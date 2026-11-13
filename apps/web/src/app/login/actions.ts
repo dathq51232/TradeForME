@@ -8,8 +8,14 @@ const safeNext = (v: FormDataEntryValue | null) => {
   return s.startsWith("/") && !s.startsWith("//") ? s : "/dashboard";
 };
 
-const back = (key: "error" | "info", msg: string, next: string, email = "") =>
-  redirect(`/login?${key}=${encodeURIComponent(msg)}&next=${encodeURIComponent(next)}${email ? `&email=${encodeURIComponent(email)}` : ""}`);
+type Mode = "login" | "register";
+
+/** Back to /login with a message; `mode` picks the tab the form reopens on. */
+const back = (key: "error" | "info", msg: string, next: string, email = "", mode: Mode = "login") =>
+  redirect(
+    `/login?${key}=${encodeURIComponent(msg)}&next=${encodeURIComponent(next)}` +
+      `${email ? `&email=${encodeURIComponent(email)}` : ""}${mode === "register" ? "&mode=register" : ""}`,
+  );
 
 const callbackUrl = async (next: string) => {
   const origin = (await headers()).get("origin") ?? "";
@@ -40,7 +46,9 @@ export async function signUp(form: FormData) {
   const next = safeNext(form.get("next"));
   const email = String(form.get("email") ?? "").trim();
   const password = String(form.get("password") ?? "");
-  if (password.length < 10) back("error", "Mật khẩu cần ít nhất 10 ký tự.", next, email);
+  const reg = (msg: string) => back("error", msg, next, email, "register");
+  if (password.length < 10) reg("Mật khẩu cần ít nhất 10 ký tự.");
+  if (form.has("confirm") && String(form.get("confirm")) !== password) reg("Mật khẩu xác nhận không khớp.");
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signUp({
     email,
@@ -48,8 +56,8 @@ export async function signUp(form: FormData) {
     options: { emailRedirectTo: await callbackUrl(next) },
   });
   if (error) {
-    if (error.status === 429) back("error", "Gửi email quá nhiều lần. Đợi khoảng 1 giờ rồi thử lại.", next, email);
-    back("error", `Không đăng ký được: ${error.message}`, next, email);
+    if (error.status === 429) reg("Gửi email quá nhiều lần. Đợi khoảng 1 giờ rồi thử lại.");
+    reg(`Không đăng ký được: ${error.message}`);
   }
   // With email confirmation on, an already registered address returns a user with no identities.
   if (data.user && data.user.identities?.length === 0) {
