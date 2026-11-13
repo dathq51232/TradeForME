@@ -1,0 +1,19 @@
+{
+  "name": "@qt/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Indicators, resampling, backtester and quant checks (from Quant Terminal, MIT).",
+  "exports": {
+    ".": "./src/index.js",
+    "./indicators": "./src/indicators.js",
+    "./series": "./src/series.js",
+    "./backtest": "./src/backtest.js",
+    "./quant": "./src/quant.js",
+    "./seasonals": "./src/seasonals.js",
+    "./volume-profile": "./src/volume-profile.js"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

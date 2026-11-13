@@ -1,0 +1,14 @@
+{
+  "name": "@qt/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Schemas and pure rules shared by web, Edge Functions and tests: copy-trade events, lot sizing, news scoring.",
+  "exports": {
+    ".": "./src/index.js",
+    "./copytrade": "./src/copytrade.js",
+    "./news": "./src/news.js"
+  },
+  "scripts": { "test": "node --test \"test/*.test.js\"" },
+  "dependencies": { "zod": "^3.25.0" }
+}

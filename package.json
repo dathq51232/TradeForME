@@ -1,0 +1,14 @@
+{
+  "name": "quant-terminal-cloud",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "npm run dev -w @qt/web",
+    "build": "npm run build -w @qt/web",
+    "lint": "npm run lint -w @qt/web",
+    "typecheck": "npm run typecheck -w @qt/web",
+    "test": "npm test -w @qt/core -w @qt/shared"
+  }
+}
