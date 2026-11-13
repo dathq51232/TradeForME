@@ -1,0 +1,17 @@
+{
+  "QT_MasterSender.ex5": {
+    "source": "QT_MasterSender.mq5",
+    "source_sha256": "91a62ac45e7813f8fdc19e53335c5b1e05783620f54181d3adc5b00231ec34e8",
+    "warnings": 0
+  },
+  "QT_Receiver.ex5": {
+    "source": "QT_Receiver.mq5",
+    "source_sha256": "b1e05e2202a71bec9b55e9a7a09ede814778a72dfc47fd50813c3cdebb99ce77",
+    "warnings": 0
+  },
+  "QT_SelfTest.ex5": {
+    "source": "QT_SelfTest.mq5",
+    "source_sha256": "fcb740a28ded56aa90e0bc856a303945a66ff4204f126668fc665342756d4044",
+    "warnings": 0
+  }
+}

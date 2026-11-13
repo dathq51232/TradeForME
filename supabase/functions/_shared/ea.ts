@@ -80,15 +80,19 @@ export async function authenticate(req: Request, db: Db, role: "master" | "recei
   const sig = (req.headers.get("x-qt-signature") ?? "").toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(token)) throw new HttpError(401, "TOKEN_INVALID");
   const t = Number(ts);
-  if (!Number.isFinite(t) || Math.abs(now - t) > MAX_SKEW_MS) {
-    throw new HttpError(401, "CLOCK_SKEW", "Đồng hồ máy chạy MT5 lệch quá 60 giây so với máy chủ.");
-  }
+  if (!Number.isFinite(t)) throw new HttpError(401, "CLOCK_SKEW");
   const text = await req.text();
   if (enc.encode(text).length > MAX_BODY_BYTES) throw new HttpError(413, "BODY_TOO_LARGE");
   const rows = (await call(db, "ct_auth", { p_token: token })) as Account[] | null;
   const account = Array.isArray(rows) ? rows[0] : null;
   if (!account) throw new HttpError(401, "TOKEN_INVALID");
   if (!safeEqual(await hmacHex(account.hmac_secret, ts + "\n" + text), sig)) throw new HttpError(401, "SIGNATURE_INVALID");
+  // Checked after the signature, so the problem can be shown on the dashboard of the right account.
+  if (Math.abs(now - t) > MAX_SKEW_MS) {
+    const msg = `Đồng hồ máy chạy MT5 lệch ${Math.round((t - now) / 1000)} giây so với máy chủ (tối đa 60). Bật đồng bộ giờ tự động của Windows.`;
+    await call(db, "ct_note_error", { p_account: account.account_id, p_error: msg }).catch(() => {});
+    throw new HttpError(401, "CLOCK_SKEW", msg);
+  }
   if (role !== "any" && account.role !== role) throw new HttpError(403, "WRONG_ROLE", `Endpoint này dành cho tài khoản ${role}.`);
   if (account.disabled) throw new HttpError(403, "ACCOUNT_DISABLED", "Tài khoản đã bị tắt trên dashboard.");
   let body: Json;
@@ -153,8 +157,16 @@ export async function heartbeat(req: Request, db: Db, now = Date.now()) {
     trade_allowed: typeof body.trade_allowed === "boolean" ? body.trade_allowed : null,
     ea_version: typeof body.ea_version === "string" ? body.ea_version.slice(0, 16) : null,
     last_error: typeof body.last_error === "string" ? body.last_error.slice(0, 300) : null,
+    // identity, filled in by the EA so the dashboard only asks for role + name
+    login: Number.isSafeInteger(body.login) && (body.login as number) > 0 ? body.login : null,
+    server: typeof body.server === "string" ? body.server.slice(0, 80) : null,
+    broker: typeof body.broker === "string" ? body.broker.slice(0, 60) : null,
+    ea_kind: body.ea_kind === "master" || body.ea_kind === "receiver" ? body.ea_kind : null,
+    selftest: typeof body.selftest === "string" ? body.selftest.slice(0, 200) : null,
+    terminal_build: Number.isSafeInteger(body.terminal_build) ? body.terminal_build : null,
   };
-  const r = (await call(db, "ct_heartbeat", { p_account: account.account_id, p })) as { min_ea_version?: string };
+  const r = (await call(db, "ct_heartbeat", { p_account: account.account_id, p })) as { min_ea_version?: string; error?: string; message?: string };
+  if (r?.error) return json(409, { error: r.error, message: r.message });
   const min = r?.min_ea_version ?? "0";
   if (versionLess(String(p.ea_version ?? "0"), min)) {
     return json(426, { error: "EA_OUTDATED", message: `Cần EA phiên bản ${min} trở lên.`, min_version: min });

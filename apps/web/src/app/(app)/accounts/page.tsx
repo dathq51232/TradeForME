@@ -5,8 +5,6 @@ import { Badge, Empty, Notice, PageHeader, Panel, td, th } from "@/components/ui
 import { AddAccountForm, RotateTokenForm } from "./token-forms";
 import { deleteAccount, setDisabled } from "./actions";
 
-const EA_SOURCE = "https://github.com/dathq51232/TradeForME/tree/main/mql5";
-const supabaseOrigin = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://<project-ref>.supabase.co").replace(/\/$/, "");
 
 export default function AccountsPage(props: PageProps<"/accounts">) {
   return (
@@ -49,10 +47,10 @@ async function Accounts({ searchParams }: { searchParams: PageProps<"/accounts">
                     <tr key={a.id} className="border-b border-border/60 align-top">
                       <td className={td}>
                         <div>{a.label}</div>
-                        <div className="font-mono text-xs text-muted">{maskLogin(a.login)}</div>
+                        <div className="font-mono text-xs text-muted">{a.login ? maskLogin(a.login) : "chờ EA tự nhận"}</div>
                         <div className="select-all font-mono text-[0.65rem] text-muted/70" title="Account ID: gửi cho chủ Master để thêm receiver này vào group">{a.id}</div>
                       </td>
-                      <td className={td}><div>{a.broker ?? "—"}</div><div className="text-xs text-muted">{a.server}</div></td>
+                      <td className={td}><div>{a.broker ?? "—"}</div><div className="text-xs text-muted">{a.server ?? "—"}</div></td>
                       <td className={td}><Badge tone={a.role === "master" ? "accent" : "muted"}>{a.role === "master" ? "Master" : "Receiver"}</Badge></td>
                       <td className={td}>
                         {a.account_type ? (a.account_type === "hedging" ? "Hedging" : "Netting") : "—"}
@@ -94,19 +92,11 @@ async function Accounts({ searchParams }: { searchParams: PageProps<"/accounts">
 
       <Panel title="Thêm tài khoản MT5" className="mt-5">
         <div id="add" />
-        <ol className="mb-4 list-decimal space-y-0.5 pl-5 text-xs text-muted">
-          <li>Điền thông tin và bấm tạo, rồi chép EA token và HMAC secret (chỉ hiện một lần).</li>
-          <li>
-            Tải mã EA tại <a href={EA_SOURCE} target="_blank" rel="noreferrer" className="text-accent hover:underline">thư mục mql5 trên GitHub</a>,
-            chép vào thư mục MQL5 của terminal, biên dịch, rồi chạy script <b>QT_SelfTest</b>: phải ra “tất cả OK”.
-          </li>
-          <li>Trong MT5: Tools → Options → Expert Advisors, bật Algo Trading và thêm <code className="text-foreground">{supabaseOrigin}</code> vào “Allow WebRequest”.</li>
-          <li>
-            Gắn <b>QT_MasterSender</b> (master) hoặc <b>QT_Receiver</b> (receiver) vào một chart. API URL:{" "}
-            <code className="select-all text-foreground">{supabaseOrigin}/functions/v1</code>, rồi dán token và secret.
-          </li>
-          <li>Khi heartbeat đầu tiên tới, trạng thái chuyển sang Online và hiện loại tài khoản (Hedging/Netting). Thử trên tài khoản demo trước.</li>
-        </ol>
+        <p className="mb-3 text-xs text-muted">
+          Tạo mã → tải EA (.ex5, dùng ngay) → cho phép WebRequest → kéo EA vào chart và dán mã. Dashboard tự đánh dấu từng bước và
+          báo lỗi nếu có (sai EA, sai tài khoản, đồng hồ lệch, chưa bật Algo Trading). Cần MT5 bản desktop chạy liên tục (máy tính hoặc
+          VPS Windows): MT5 bản web và điện thoại không chạy được EA. Thử trên tài khoản demo trước.
+        </p>
         <AddAccountForm />
       </Panel>
     </>

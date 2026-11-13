@@ -74,6 +74,33 @@ test("heartbeat refuses outdated EAs with 426 and stores live state", async () =
   assert.equal(row.status, "online");
 });
 
+test("heartbeat fills login/server once, then refuses another account, the wrong EA and a skewed clock", async () => {
+  const n = (await asUser(BOB, "select * from public.create_mt5_account('receiver', 'Auto', null, null)")).rows[0] as Record<string, string>;
+  const auto = { id: n.account_id, token: n.ea_token, secret: n.hmac_secret };
+  const row = async () => (await pg.query("select login, server, broker, ea_kind, selftest, first_seen_at, last_error from public.mt5_accounts where id = $1", [auto.id])).rows[0] as Record<string, unknown>;
+  const hb = { ea_version: "1.1.0", trade_allowed: true, login: 777, server: "Demo-MT5", broker: "Demo Ltd", ea_kind: "receiver", selftest: "ok", terminal_build: 5000 };
+
+  assert.equal((await call((r) => heartbeat(r, db), await signed("/hb", auto, hb))).status, 200);
+  let x = await row();
+  assert.deepEqual([String(x.login), x.server, x.broker, x.ea_kind, x.selftest, x.first_seen_at != null], ["777", "Demo-MT5", "Demo Ltd", "receiver", "ok", true]);
+
+  const other = await call((r) => heartbeat(r, db), await signed("/hb", auto, { ...hb, login: 888 }));
+  assert.deepEqual([other.status, other.body.error], [409, "ACCOUNT_MISMATCH"]);
+  assert.match(String((await row()).last_error), /777.*888/);
+
+  const wrongEa = await call((r) => heartbeat(r, db), await signed("/hb", auto, { ...hb, ea_kind: "master" }));
+  assert.deepEqual([wrongEa.status, wrongEa.body.error], [409, "WRONG_EA"]);
+
+  const taken = (await asUser(BOB, "select * from public.create_mt5_account('receiver', 'Dup', null, null)")).rows[0] as Record<string, string>;
+  const dup = await call((r) => heartbeat(r, db), await signed("/hb", { id: taken.account_id, token: taken.ea_token, secret: taken.hmac_secret }, hb));
+  assert.deepEqual([dup.status, dup.body.error], [409, "ACCOUNT_IN_USE"]);
+
+  const skew = await call((r) => heartbeat(r, db), await signed("/hb", auto, hb, { ts: Date.now() + 300_000 }));
+  assert.deepEqual([skew.status, skew.body.error], [401, "CLOCK_SKEW"]);
+  x = await row();
+  assert.match(String(x.last_error), /Đồng hồ/);
+});
+
 test("ingest: masters only, validated, idempotent", async () => {
   const e = { event_uid: "1-DEAL-9", type: "OPEN", master_ticket: 9, symbol: "XAUUSD", side: "BUY", volume: 0.5, price: 2650, master_equity: 10000, ts_ms: Date.now() };
   const asReceiver = await call((r) => ingest(r, db), await signed("/ingest", receiver, { events: [e] }));

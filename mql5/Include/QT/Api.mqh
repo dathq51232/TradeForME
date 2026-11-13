@@ -7,7 +7,11 @@
 
 #include "Json.mqh"
 
-#define QT_EA_VERSION "1.0.0"
+#define QT_EA_VERSION "1.1.0"
+
+//--- set by each EA in OnInit; sent with every heartbeat so the dashboard can check the setup
+string g_qtKind = "";       // "master" | "receiver"
+string g_qtSelfTest = "";   // "ok" | "fail: ..."
 
 //--- SHA-256 of a byte array
 void QTSha256(const uchar &data[], uchar &out[])
@@ -157,7 +161,7 @@ bool QTStartupCheck(CQTApi &api, const string who)
    if(code == 200) { Print(who, ": đã kết nối máy chủ"); return true; }
    if(code == -1) Alert(who, ": ", api.lastError);
    else if(code == 401) Alert(who, ": máy chủ từ chối (", api.lastError, "). Mã kết nối sai hoặc đã được cấp lại; nếu báo CLOCK_SKEW thì chỉnh lại đồng hồ máy.");
-   else if(code == 403) Alert(who, ": ", api.lastError);
+   else if(code == 403 || code == 409) Alert(who, ": ", api.lastError);
    else if(code == 426) Alert(who, ": cần tải bản EA mới. ", api.lastError);
    else Alert(who, ": lỗi máy chủ ", code, " ", api.lastError);
    return false;
@@ -180,6 +184,12 @@ string QTHeartbeatBody(const string lastError)
           + JKb("terminal_connected", (bool)TerminalInfoInteger(TERMINAL_CONNECTED)) + ","
           + JKb("trade_allowed", tradeAllowed) + ","
           + JKs("ea_version", QT_EA_VERSION) + ","
+          + JKs("ea_kind", g_qtKind) + ","
+          + JKs("selftest", g_qtSelfTest) + ","
+          + JKi("login", AccountInfoInteger(ACCOUNT_LOGIN)) + ","
+          + JKs("server", AccountInfoString(ACCOUNT_SERVER)) + ","
+          + JKs("broker", AccountInfoString(ACCOUNT_COMPANY)) + ","
+          + JKi("terminal_build", TerminalInfoInteger(TERMINAL_BUILD)) + ","
           + JKs("last_error", lastError) + "}";
   }
 //+------------------------------------------------------------------+

@@ -17,6 +17,7 @@
 #include <Trade\Trade.mqh>
 #include <QT\Api.mqh>
 #include <QT\Lot.mqh>
+#include <QT\SelfTest.mqh>
 
 input string InpConnection   = "";      // Mã kết nối (dán từ trang Tài khoản MT5)
 input int    InpPollWaitSec  = 20;      // long-poll wait (s, max 20)
@@ -54,7 +55,14 @@ int OnInit()
      }
    LoadCursors();
    g_trade.SetAsyncMode(false);
+   g_qtKind = "receiver";
+   g_qtSelfTest = QTSelfTest(false);   // reported with the heartbeat, shown on the dashboard
    if(QTStartupCheck(g_api, "QT Receiver")) g_lastHeartbeat = TimeLocal();
+   if(g_qtSelfTest != "ok")
+     {
+      Alert("QT Receiver: self-test lỗi (", g_qtSelfTest, "). EA dừng để không xử lý lệnh sai.");
+      return INIT_FAILED;
+     }
    EventSetTimer(1);
    return INIT_SUCCEEDED;
   }

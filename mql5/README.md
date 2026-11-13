@@ -11,16 +11,16 @@ Quy tắc tính lot, ánh xạ symbol, bộ lọc và rủi ro là bản chuyể
 
 ## Cài đặt (cách nhanh)
 
-1. Dashboard → **Tài khoản MT5** → tạo tài khoản. Web hiện **mã kết nối** (một dòng `QT1.…`, chỉ hiện một lần), nút **Chép mã**, link tải EA và file `.set`.
-2. Tải `QT_MasterSender.mq5` hoặc `QT_Receiver.mq5` (mỗi EA là **một file**, đã gộp sẵn thư viện). Trong MT5: **File → Open Data Folder → MQL5/Experts**, chép file vào, mở bằng MetaEditor và bấm **F7** (biên dịch một lần).
-3. **Tools → Options → Expert Advisors**: bật *Allow algorithmic trading*, thêm `https://<project-ref>.supabase.co` vào *Allow WebRequest*. MT5 bắt buộc bước này với mọi EA gọi mạng.
-4. Kéo EA vào **một** chart, dán mã vào ô **Mã kết nối** (hoặc bấm *Load* và chọn file `.set`).
-5. EA kiểm tra kết nối ngay khi khởi động. Nếu chưa cho phép WebRequest, mã sai hoặc đồng hồ lệch, MT5 hiện cảnh báo nói rõ lỗi gì. Kết nối được thì vài giây sau dashboard hiện tài khoản **Online**.
+1. Dashboard → **Tài khoản MT5** → chọn vai trò, đặt tên → **Tạo mã kết nối**. Không cần nhập login/server: EA tự nhận tài khoản đang đăng nhập.
+2. Tải `QT_MasterSender.ex5` hoặc `QT_Receiver.ex5` (đã biên dịch sẵn). MT5: **File → Open Data Folder → MQL5/Experts**, chép file vào, rồi Navigator → **Expert Advisors → Refresh**.
+3. **Tools → Options → Expert Advisors**: thêm `https://<project-ref>.supabase.co` vào *Allow WebRequest* (dashboard có nút chép). MT5 bắt buộc bước này với mọi EA gọi mạng.
+4. Kéo EA vào **một** chart, dán mã vào ô **Mã kết nối** (hoặc *Load* file `.set`).
+5. Dashboard tự đánh dấu: EA đã gọi tới, đúng tài khoản, self-test, Algo Trading, Online. Sai EA cho vai trò, dán mã vào tài khoản khác, hoặc đồng hồ lệch thì cả MT5 và dashboard đều báo rõ.
 6. Trang **Copy Trading**: thêm receiver vào group, kiểm tra cấu hình, bật receiver, rồi bấm **Chạy**.
 
-Nên chạy script `QT_SelfTest.mq5` (chép vào `MQL5/Scripts`) một lần trước: tab Experts phải ra `QT self-test: tất cả OK`.
+Mỗi EA tự chạy self-test (chữ ký, JSON, tính lot) khi khởi động và dừng nếu lỗi. Script `QT_SelfTest` chỉ để xem từng dòng kiểm tra.
 
-File tải về được sinh từ `Experts/`, `Scripts/` và `Include/QT/` bằng `node mql5/build.mjs` (UTF-8 có BOM để MetaEditor đọc đúng tiếng Việt). Sửa mã nguồn thì chạy lại lệnh đó; `npm test` báo lỗi nếu quên. Mục **Nâng cao** trong EA (API URL, token, secret riêng) chỉ dùng khi không có mã kết nối.
+File tải về được sinh từ `Experts/`, `Scripts/` và `Include/QT/` bằng `node mql5/build.mjs --compile` (chạy trên Windows có MT5; bundle `.mq5` là UTF-8 có BOM). `ex5.json` ghi mã băm nguồn của từng `.ex5`, nên `npm test` báo lỗi nếu sửa nguồn mà quên biên dịch lại. MT5 quá cũ có thể không chạy `.ex5` mới: cập nhật MT5, hoặc tải bản `.mq5` và bấm F7. Mục **Nâng cao** trong EA (API URL, token, secret riêng) chỉ dùng khi không có mã kết nối.
 
 ## Cách hoạt động
 
@@ -36,4 +36,4 @@ File tải về được sinh từ `Experts/`, `Scripts/` và `Include/QT/` bằ
 - Thiết kế cho master **Hedging**. Trên tài khoản Netting, thêm khối lượng vào vị thế có sẵn và lệnh đảo chiều chưa được copy đúng.
 - SL/TP được copy theo **giá tuyệt đối** của master. Hai broker báo giá lệch nhau vài point thì SL/TP lệch tương ứng.
 - Khi chọn "Đảo chiều", SL/TP và lệnh sửa SL/TP không được copy.
-- Mã MQL5 **chưa được biên dịch và chạy thử** trong môi trường phát triển (không có MetaEditor). Hãy chạy `QT_SelfTest`, rồi thử trên **tài khoản demo** ít nhất 2 tuần theo lộ trình thiết kế trước khi dùng tiền thật.
+- Mã MQL5 đã biên dịch không lỗi (MetaEditor 64-bit) nhưng **chưa chạy thử trên tài khoản thật**. Hãy thử trên **tài khoản demo** ít nhất 2 tuần theo lộ trình thiết kế trước khi dùng tiền thật.

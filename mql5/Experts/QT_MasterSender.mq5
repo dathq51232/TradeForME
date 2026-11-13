@@ -11,6 +11,7 @@
 #property strict
 
 #include <QT\Api.mqh>
+#include <QT\SelfTest.mqh>
 
 input string InpConnection   = "";      // Mã kết nối (dán từ trang Tài khoản MT5)
 input string InpBarSymbols    = "XAUUSD=XAUUSD,XAGUSD=XAGUSD,WTI=USOIL,BRENT=UKOIL"; // chart symbol=this broker's symbol; empty = do not send prices
@@ -48,7 +49,14 @@ int OnInit()
    ParseBarMap();
    LoadQueue();
    EventSetTimer(1);
+   g_qtKind = "master";
+   g_qtSelfTest = QTSelfTest(false);   // reported with the heartbeat, shown on the dashboard
    if(QTStartupCheck(g_api, "QT Master")) g_lastHeartbeat = TimeLocal();
+   if(g_qtSelfTest != "ok")
+     {
+      Alert("QT Master: self-test lỗi (", g_qtSelfTest, "). EA dừng để không xử lý lệnh sai.");
+      return INIT_FAILED;
+     }
    return INIT_SUCCEEDED;
   }
 
