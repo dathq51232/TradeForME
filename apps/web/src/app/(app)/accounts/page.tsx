@@ -5,6 +5,9 @@ import { Badge, Empty, Notice, PageHeader, Panel, td, th } from "@/components/ui
 import { AddAccountForm, RotateTokenForm } from "./token-forms";
 import { deleteAccount, setDisabled } from "./actions";
 
+const EA_SOURCE = "https://github.com/dathq51232/TradeForME/tree/main/mql5";
+const supabaseOrigin = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://<project-ref>.supabase.co").replace(/\/$/, "");
+
 export default function AccountsPage(props: PageProps<"/accounts">) {
   return (
     <Suspense fallback={<p className="text-sm text-muted">Đang tải…</p>}>
@@ -92,10 +95,17 @@ async function Accounts({ searchParams }: { searchParams: PageProps<"/accounts">
       <Panel title="Thêm tài khoản MT5" className="mt-5">
         <div id="add" />
         <ol className="mb-4 list-decimal space-y-0.5 pl-5 text-xs text-muted">
-          <li>Điền thông tin và bấm tạo, rồi chép Account ID, token và HMAC secret.</li>
-          <li>Trong MT5: Tools → Options → Expert Advisors, bật Algo Trading và thêm URL máy chủ vào “Allow WebRequest”.</li>
-          <li>Gắn EA QT_MasterSender (master) hoặc QT_Receiver (receiver) vào một chart và dán token. EA có ở Giai đoạn 3.</li>
-          <li>Khi heartbeat đầu tiên tới, trạng thái chuyển sang Online và hiện loại tài khoản (Hedging/Netting).</li>
+          <li>Điền thông tin và bấm tạo, rồi chép EA token và HMAC secret (chỉ hiện một lần).</li>
+          <li>
+            Tải mã EA tại <a href={EA_SOURCE} target="_blank" rel="noreferrer" className="text-accent hover:underline">thư mục mql5 trên GitHub</a>,
+            chép vào thư mục MQL5 của terminal, biên dịch, rồi chạy script <b>QT_SelfTest</b>: phải ra “tất cả OK”.
+          </li>
+          <li>Trong MT5: Tools → Options → Expert Advisors, bật Algo Trading và thêm <code className="text-foreground">{supabaseOrigin}</code> vào “Allow WebRequest”.</li>
+          <li>
+            Gắn <b>QT_MasterSender</b> (master) hoặc <b>QT_Receiver</b> (receiver) vào một chart. API URL:{" "}
+            <code className="select-all text-foreground">{supabaseOrigin}/functions/v1</code>, rồi dán token và secret.
+          </li>
+          <li>Khi heartbeat đầu tiên tới, trạng thái chuyển sang Online và hiện loại tài khoản (Hedging/Netting). Thử trên tài khoản demo trước.</li>
         </ol>
         <AddAccountForm />
       </Panel>

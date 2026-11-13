@@ -428,3 +428,19 @@ enabled = true
 # EA endpoints authenticate with their own token, not a Supabase JWT.
 [functions.health]
 verify_jwt = false
+
+# EA endpoints authenticate with the EA token + HMAC signature, not a Supabase JWT.
+[functions.ct-heartbeat]
+verify_jwt = false
+
+[functions.ct-ingest]
+verify_jwt = false
+
+[functions.ct-pull]
+verify_jwt = false
+
+[functions.ct-ack]
+verify_jwt = false
+
+[functions.ct-bars]
+verify_jwt = false

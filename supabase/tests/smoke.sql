@@ -173,6 +173,64 @@ do $$ begin
   assert (select count(*) from public.copy_links) = 1, 'receiver owner sees the link';
 end $$;
 
+-- ---- EA API (service role, as the Edge Functions call it) ----
+reset role;
+do $$
+declare
+  m uuid := (select v::uuid from t_ids where k = 'master');
+  r uuid := (select v::uuid from t_ids where k = 'receiver');
+  j jsonb;
+  ack jsonb;
+begin
+  -- heartbeat updates live state; snapshots at most every 5 minutes
+  j := public.ct_heartbeat(r, '{"balance":5000,"equity":5100,"margin":200,"margin_level":2550,"floating_pl":100,
+    "open_positions":1,"currency":"USD","account_type":"hedging","terminal_connected":true,"trade_allowed":true,"ea_version":"1.0.0"}');
+  assert (select status from public.mt5_accounts where id = r) = 'online', 'heartbeat marks the account online';
+  assert (select account_type from public.mt5_accounts where id = r) = 'hedging', 'heartbeat stores account type';
+  assert j ->> 'min_ea_version' = '1.0.0', 'heartbeat returns the minimum EA version';
+  perform public.ct_heartbeat(r, '{"balance":5000,"equity":5100,"trade_allowed":true}');
+  assert (select count(*) from public.account_snapshots where account_id = r) = 1, 'one snapshot per 5 minutes';
+
+  -- a new receiver starts at the master's current seq; then gets what comes after
+  update public.copy_groups set state = 'running' where master_id = m;
+  update public.copy_links set enabled = true where master_id = m;
+  j := public.ct_pull_batch(r, '{}');
+  assert (j -> 'cursors' ->> m::text)::bigint = 3 and jsonb_array_length(j -> 'events') = 0, 'no history replay for a new cursor';
+  perform public.ct_append_events(m, '[{"event_uid":"1001-DEAL-7","type":"OPEN","master_ticket":7,"symbol":"XAUUSD","side":"BUY","volume":0.2,"price":2650,"master_equity":10000,"ts_ms":1794567890123}]');
+  j := public.ct_pull_batch(r, jsonb_build_object(m::text, 3));
+  assert jsonb_array_length(j -> 'events') = 1 and (j -> 'events' -> 0 ->> 'seq')::int = 4, 'pull_batch returns new events';
+  assert (public.ct_receiver_links(r) -> 0 -> 'settings' ->> 'lot_mode') = 'equity_ratio', 'links carry settings';
+  assert public.ct_receiver_links(r) -> 0 -> 'settings' -> 'receiver_id' is null, 'ids are not repeated in settings';
+
+  -- ack is idempotent and maintains the position map
+  ack := jsonb_build_array(jsonb_build_object('master_id', m, 'seq', 4, 'master_ticket', 7, 'status', 'executed', 'action', 'OPEN',
+    'symbol', 'XAUUSD', 'side', 'BUY', 'master_volume', 0.2, 'volume', 0.1, 'receiver_ticket', 555, 'latency_ms', 420));
+  assert public.ct_ack(r, ack) = 1, 'ack stored';
+  perform public.ct_ack(r, ack);
+  assert (select count(*) from public.ct_executions where seq = 4) = 1, 'repeated ack does not duplicate';
+  assert (select receiver_ticket from public.ct_position_map where master_ticket = 7) = 555, 'position map records the receiver ticket';
+  perform public.ct_ack(r, jsonb_build_array(jsonb_build_object('master_id', m, 'seq', 5, 'master_ticket', 7, 'status', 'executed', 'action', 'CLOSE')));
+  assert (select closed_at is not null from public.ct_position_map where master_ticket = 7), 'close marks the mapping closed';
+
+  -- a risk limit with pause_receiver disables the link on the server and notifies the owner
+  perform public.ct_ack(r, jsonb_build_array(jsonb_build_object('master_id', m, 'seq', 6, 'master_ticket', 8, 'status', 'rejected',
+    'action', 'OPEN', 'error_class', 'risk_limit', 'reason', 'MAX_DAILY_LOSS', 'risk_action', 'pause_receiver')));
+  assert not (select enabled from public.copy_links where master_id = m), 'pause_receiver disables the link';
+  assert (select count(*) from public.risk_events) = 1, 'risk event recorded';
+  assert (select count(*) from public.notifications where level = 'critical') = 1, 'owner notified';
+
+  -- broker bars: only known symbols, recent times, masters only
+  assert public.ct_push_bars(m, jsonb_build_array(
+    jsonb_build_object('symbol', 'XAUUSD', 't', floor(extract(epoch from now()) / 60) * 60 - 60, 'o', 1, 'h', 2, 'l', 0.5, 'c', 1.5, 'v', 10),
+    jsonb_build_object('symbol', 'FOO', 't', floor(extract(epoch from now()) / 60) * 60, 'o', 1, 'h', 1, 'l', 1, 'c', 1),
+    jsonb_build_object('symbol', 'WTI', 't', 1000, 'o', 1, 'h', 1, 'l', 1, 'c', 1))) = 1, 'only valid bars are stored';
+  begin
+    perform public.ct_push_bars(r, '[]');
+    raise exception 'receivers must not push bars';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
 reset role;
 select 'smoke ok' as result;
 rollback;

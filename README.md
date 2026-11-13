@@ -76,6 +76,6 @@ PR → CI (test, lint, typecheck, build, migration + smoke SQL trên Postgres s�
 - [x] Nâng cấp theo tài liệu MT5 Copy Trading ([phân tích](docs/PHAN-TICH-NANG-CAP.md)): copy group, Pause/Stop/Emergency/Close All, risk limits, app shell tối, Dashboard, MT5 Accounts, Copy Trading, cấu hình Receiver
 - [x] Giai đoạn 1 — biểu đồ cloud: /charts (Lightweight Charts, 7 khung TG, ~70 chỉ báo từ packages/core, đường giá, watchlist, layout lưu Supabase), /api/bars (broker M1 → Binance → Coinbase → Yahoo)
 - [ ] Giai đoạn 2 — tin tức tác động
-- [ ] Giai đoạn 3 — copy trade MT5
+- [x] Giai đoạn 3 — copy trade MT5: Edge Functions ct-heartbeat/ct-ingest/ct-pull/ct-ack/ct-bars (ký HMAC, có test end-to-end), EA Master/Receiver + QT_SelfTest (xem mql5/README.md). Chưa chạy thử trên MT5 thật
 
 Không phải khuyến nghị đầu tư.

@@ -28,7 +28,7 @@ export const SnapshotPosition = z.object({
   tp: price.optional(),
 });
 
-const REQUIRED = {
+export const REQUIRED = {
   OPEN: ["master_ticket", "symbol", "side", "volume", "price", "master_equity"],
   CLOSE: ["master_ticket"],
   PARTIAL_CLOSE: ["master_ticket", "volume", "volume_before"],
@@ -56,6 +56,8 @@ export const CopyEvent = z
     tp: price.optional(),
     master_balance: z.number().optional(),
     master_equity: z.number().optional(),
+    /** Master symbol contract size (SYMBOL_TRADE_CONTRACT_SIZE), so receivers convert lots across brokers. */
+    contract_size: z.number().positive().optional(),
     positions: z.array(SnapshotPosition).max(500).optional(),
     close_all: z.boolean().optional(),
     ts_ms: z.number().int().positive(),
