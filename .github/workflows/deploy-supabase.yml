@@ -25,6 +25,22 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      - name: Check configuration
+        env:
+          VAR_PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+          VAR_ACCESS_TOKEN: ${{ vars.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          supabase --version
+          ok=1
+          for n in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
+            if [ -z "${!n}" ]; then echo "::error::Secret $n is missing or empty"; ok=0; else echo "$n is set (${#SUPABASE_PROJECT_ID} chars for project id)"; fi
+          done
+          if [ -n "$VAR_PROJECT_ID$VAR_ACCESS_TOKEN" ]; then
+            echo "::error::Found these under Actions *Variables*; they must be *Secrets*."
+          fi
+          case "$SUPABASE_ACCESS_TOKEN" in sbp_*) ;; "") ;; *) echo "::error::SUPABASE_ACCESS_TOKEN should be a personal access token starting with sbp_"; ok=0;; esac
+          [ "$SUPABASE_PROJECT_ID" = "${SUPABASE_PROJECT_ID//[^a-z]/}" ] || { echo "::error::SUPABASE_PROJECT_ID should be the 20-letter project ref only, not a URL"; ok=0; }
+          [ $ok = 1 ]
       - run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
       - name: Show pending migrations
         run: supabase migration list
