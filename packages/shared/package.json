@@ -7,8 +7,13 @@
   "exports": {
     ".": "./src/index.js",
     "./copytrade": "./src/copytrade.js",
-    "./news": "./src/news.js"
+    "./news": "./src/news.js",
+    "./market": "./src/market.js"
   },
-  "scripts": { "test": "node --test \"test/*.test.js\"" },
-  "dependencies": { "zod": "^3.25.0" }
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "zod": "^3.25.0"
+  }
 }

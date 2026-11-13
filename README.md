@@ -74,7 +74,7 @@ PR → CI (test, lint, typecheck, build, migration + smoke SQL trên Postgres s�
 
 - [x] Giai đoạn 0 — monorepo, core + shared có test, schema + RLS, Auth, CI/CD
 - [x] Nâng cấp theo tài liệu MT5 Copy Trading ([phân tích](docs/PHAN-TICH-NANG-CAP.md)): copy group, Pause/Stop/Emergency/Close All, risk limits, app shell tối, Dashboard, MT5 Accounts, Copy Trading, cấu hình Receiver
-- [ ] Giai đoạn 1 — biểu đồ cloud
+- [x] Giai đoạn 1 — biểu đồ cloud: /charts (Lightweight Charts, 7 khung TG, ~70 chỉ báo từ packages/core, đường giá, watchlist, layout lưu Supabase), /api/bars (broker M1 → Binance → Coinbase → Yahoo)
 - [ ] Giai đoạn 2 — tin tức tác động
 - [ ] Giai đoạn 3 — copy trade MT5
 
