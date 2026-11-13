@@ -18,6 +18,7 @@ async function LoginForm({ searchParams }: { searchParams: PageProps<"/login">["
   const error = one(sp.error);
   const info = one(sp.info);
   const next = one(sp.next) ?? "/dashboard";
+  const email = one(sp.email) ?? "";
   const input = "w-full rounded-md border border-border bg-card px-3 py-2 text-sm";
   return (
     <form className="mt-6 space-y-3">
@@ -26,12 +27,13 @@ async function LoginForm({ searchParams }: { searchParams: PageProps<"/login">["
       <input type="hidden" name="next" value={next} />
       <label className="block text-sm">
         Email
-        <input name="email" type="email" required autoComplete="email" className={`mt-1 ${input}`} />
+        <input name="email" type="email" required autoComplete="email" defaultValue={email} className={`mt-1 ${input}`} />
       </label>
       <label className="block text-sm">
         Mật khẩu
         <input name="password" type="password" required minLength={6} autoComplete="current-password" className={`mt-1 ${input}`} />
       </label>
+      <p className="text-xs text-muted">Lần đầu: nhập email và mật khẩu (ít nhất 10 ký tự) rồi bấm Đăng ký, sau đó bấm liên kết trong email xác nhận.</p>
       <div className="flex gap-2 pt-2">
         <button formAction={signIn} className="flex-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white">
           Đăng nhập
