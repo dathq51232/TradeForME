@@ -25,6 +25,7 @@ type Initial = {
 };
 type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; note?: string; error?: string };
 
+const NO_INDICATORS: ActiveIndicator[] = [];
 // Indicators that need anchors or draw boxes/profiles are left out of the menu.
 const SKIP = new Set(["vpvr", "svp", "avwap", "markov", "zigzag", "pivots", "pivotshl"]);
 const MENU = INDICATORS.filter((d) => !SKIP.has(d.id) && (d.outputs?.length ?? 0) > 0);
@@ -135,6 +136,18 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const setStyle = (patch: Partial<ChartStyle>) => setView((v) => ({ ...v, style: { ...v.style, ...patch } }));
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState(false);
+  // indicators (and pattern drawings) taken off the chart without removing them; remembered on this browser
+  const [indHidden, setIndHidden] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount: storage is not there on the server
+      if (window.localStorage.getItem("qt-ind-hidden") === "1") setIndHidden(true);
+    } catch { /* storage blocked: start shown */ }
+  }, []);
+  const toggleIndHidden = () => setIndHidden((h) => {
+    try { window.localStorage.setItem("qt-ind-hidden", h ? "0" : "1"); } catch { /* storage blocked: this visit only */ }
+    return !h;
+  });
   const chartApi = useRef<ChartHandle>(null);
   const shell = useRef<HTMLElement>(null);
   const history = useRef<Record<string, { hlines: number[]; shapes: Shape[] }[]>>({});
@@ -463,11 +476,12 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   }, [found, info.digits]);
   const chartMarkers = useMemo<TimedMarker[]>(() => [
     ...tradeMarkers,
-    ...found.candles.map((c): TimedMarker => ({
+    // candlestick-pattern labels belong to pattern recognition: "Ẩn tất cả" takes them off too
+    ...(indHidden ? [] : found.candles).map((c): TimedMarker => ({
       time: c.time, position: c.bias < 0 ? "aboveBar" : "belowBar", shape: c.bias > 0 ? "arrowUp" : c.bias < 0 ? "arrowDown" : "circle",
       color: c.bias > 0 ? COLORS.up : c.bias < 0 ? COLORS.down : COLORS.muted, text: c.name,
     })),
-  ], [tradeMarkers, found.candles]);
+  ], [tradeMarkers, found.candles, indHidden]);
   const liveCandle = found.candles.filter((c) => c.i >= bars.length - 3).at(-1);
   const sessionNow = auto.sessions && clock ? sessionStatus(Math.floor(clock / 1000)) : null;
   const patternChips = found.patterns.filter((p) => p.status !== "expired").slice(0, 4);
@@ -722,19 +736,24 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           </span>
         </div>
 
-        {/* active indicators, drawings, alerts */}
-        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0 || patternChips.length > 0 || wedgeChips.length > 0 || liveCandle) && (
-          <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
-            {activeTool && (
-              <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
-                {activeTool.label}: {activeTool.hint}{activeTool.id !== "hline" && SHAPE_POINTS[activeTool.id] > 1 && view.magnet ? " · nam châm bật" : ""} · Esc để huỷ
-              </span>
-            )}
+        {/* indicators: a row that folds away like the watchlist, and a switch that takes them all off the chart */}
+        {indicators.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5 text-xs">
+            <PanelToggle panel="ind" title="Thu gọn / mở rộng hàng chỉ báo" className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-muted hover:bg-panel-2 hover:text-foreground">
+              <span aria-hidden className="ind-collapsed:hidden">▾</span><span aria-hidden className="ind-expanded:hidden">▸</span>
+              Chỉ báo ({indicators.length})
+            </PanelToggle>
+            <button onClick={toggleIndHidden} aria-pressed={indHidden}
+              title={indHidden ? "Hiện lại chỉ báo và hình nhận diện trên biểu đồ" : "Ẩn mọi chỉ báo và hình nhận diện khỏi biểu đồ (không xoá, bấm lại để hiện)"}
+              className={`rounded border px-1.5 py-0.5 ${indHidden ? "border-warn/50 bg-warn/10 text-warn" : "border-border text-muted hover:text-foreground"}`}>
+              {indHidden ? "◌ Đang ẩn · bấm để hiện" : "👁 Ẩn tất cả"}
+            </button>
+            <span className="contents ind-collapsed:hidden">
             {indicators.map((ind) => {
               const def = BY_ID[ind.id];
               const editable = (def?.inputs ?? []).filter((i) => ["int", "float", "select", "source"].includes(i.type));
               return (
-                <span key={ind.uid} className="relative inline-flex items-center gap-1 rounded border border-border bg-panel-2 px-1.5 py-0.5">
+                <span key={ind.uid} className={`relative inline-flex items-center gap-1 rounded border border-border bg-panel-2 px-1.5 py-0.5 ${indHidden ? "opacity-50" : ""}`}>
                   <button onClick={() => setEditing(editing === ind.uid ? null : ind.uid)} title="Sửa tham số">
                     {def?.name.replace(/\s*\(.*\)$/, "") ?? ind.id}{paramText(ind) && <span className="text-muted"> ({paramText(ind)})</span>}
                   </button>
@@ -761,23 +780,18 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                 </span>
               );
             })}
-            {hlines.map((h) => (
-              <span key={h.price} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${h.alert ? "border-accent/50 text-accent" : "border-warn/40 text-warn"}`}>
-                ― {fmt(h.price, info.digits)}
-                <button onClick={() => toggleAlert(h.price)} title={h.alert ? "Tắt cảnh báo" : "Báo khi giá chạm đường này"}
-                  className={h.alert ? "" : "opacity-50 hover:opacity-100"}>🔔</button>
-                <button onClick={() => removeLine(h.price)} className="hover:text-down" title="Xoá đường">×</button>
-              </span>
-            ))}
-            {shapes.map((s) => (
-              <span key={s.id} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${s.id === selected ? "border-warn bg-warn/10 text-warn" : "border-accent/40 text-accent"}`}>
-                <button onClick={() => setSelected(s.id === selected ? null : s.id)} title="Chọn (Delete để xoá)">
-                  {TOOLS.find((t) => t.id === s.kind)?.icon} {s.kind === "text" && s.text ? `“${s.text.slice(0, 20)}”` : SHAPE_LABEL[s.kind]}
-                </button>
-                <button onClick={() => removeShape(s.id)} className="hover:text-down" title="Xoá">×</button>
-              </span>
-            ))}
-            {hidden && (shapes.length > 0 || hlines.length > 0) && <span className="text-warn">Hình vẽ đang ẩn</span>}
+            </span>
+          </div>
+        )}
+
+        {/* automatic pattern recognition: its own folding row */}
+        {(wedgeChips.length > 0 || patternChips.length > 0 || liveCandle) && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5 text-xs">
+            <PanelToggle panel="pat" title="Thu gọn / mở rộng hàng nhận diện" className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-muted hover:bg-panel-2 hover:text-foreground">
+              <span aria-hidden className="pat-collapsed:hidden">▾</span><span aria-hidden className="pat-expanded:hidden">▸</span>
+              Nhận diện ({wedgeChips.length + patternChips.length + (liveCandle ? 1 : 0)})
+            </PanelToggle>
+            <span className={`contents pat-collapsed:hidden ${indHidden ? "[&>*]:opacity-50" : ""}`}>
             {wedgeChips.map((w) => (
               <span key={`${w.kind}${w.start}`}
                 title={[
@@ -801,6 +815,35 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                 🕯 {liveCandle.name}
               </span>
             )}
+            </span>
+          </div>
+        )}
+
+        {/* tool in use, drawings, alerts, news */}
+        {(hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0) && (
+          <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
+            {activeTool && (
+              <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
+                {activeTool.label}: {activeTool.hint}{activeTool.id !== "hline" && SHAPE_POINTS[activeTool.id] > 1 && view.magnet ? " · nam châm bật" : ""} · Esc để huỷ
+              </span>
+            )}
+            {hlines.map((h) => (
+              <span key={h.price} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${h.alert ? "border-accent/50 text-accent" : "border-warn/40 text-warn"}`}>
+                ― {fmt(h.price, info.digits)}
+                <button onClick={() => toggleAlert(h.price)} title={h.alert ? "Tắt cảnh báo" : "Báo khi giá chạm đường này"}
+                  className={h.alert ? "" : "opacity-50 hover:opacity-100"}>🔔</button>
+                <button onClick={() => removeLine(h.price)} className="hover:text-down" title="Xoá đường">×</button>
+              </span>
+            ))}
+            {shapes.map((s) => (
+              <span key={s.id} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${s.id === selected ? "border-warn bg-warn/10 text-warn" : "border-accent/40 text-accent"}`}>
+                <button onClick={() => setSelected(s.id === selected ? null : s.id)} title="Chọn (Delete để xoá)">
+                  {TOOLS.find((t) => t.id === s.kind)?.icon} {s.kind === "text" && s.text ? `“${s.text.slice(0, 20)}”` : SHAPE_LABEL[s.kind]}
+                </button>
+                <button onClick={() => removeShape(s.id)} className="hover:text-down" title="Xoá">×</button>
+              </span>
+            ))}
+            {hidden && (shapes.length > 0 || hlines.length > 0) && <span className="text-warn">Hình vẽ đang ẩn</span>}
             {recent.map((e) => (
               <span key={`${e.country}${e.title}${e.time}`} className="rounded border border-down/40 px-1.5 py-0.5 text-down" title="Tin mạnh trong 6 giờ qua">
                 📰 {e.country} {e.title}: thực tế {e.actual ?? "—"} / dự báo {e.forecast ?? "—"}
@@ -811,9 +854,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         )}
 
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
-          <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
+          <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indHidden ? NO_INDICATORS : indicators}
             chartType={view.type} scaleMode={view.scale} magnet={view.magnet} style={view.style}
-            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines}
+            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={indHidden ? NO_AUTO : autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines}
             tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (

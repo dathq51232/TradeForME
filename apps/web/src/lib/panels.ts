@@ -1,6 +1,7 @@
 // Collapsible panels: each maps to a data attribute on <html> and a localStorage key (see <PanelToggle>).
-export type Panel = "nav" | "wl";
-export const PANEL_KEY: Record<Panel, string> = { nav: "qt-nav", wl: "qt-wl" };
+// ind / pat: the chart's indicator row and its pattern-recognition row (chips under the toolbar).
+export type Panel = "nav" | "wl" | "ind" | "pat";
+export const PANEL_KEY: Record<Panel, string> = { nav: "qt-nav", wl: "qt-wl", ind: "qt-ind", pat: "qt-pat" };
 
 /**
  * Restores collapsed panels before first paint (so a collapsed sidebar never flashes open). Runs as an inline

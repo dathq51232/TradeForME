@@ -6,6 +6,10 @@
 @custom-variant nav-expanded (html:not([data-nav="collapsed"]) &);
 @custom-variant wl-collapsed (html[data-wl="collapsed"] &);
 @custom-variant wl-expanded (html:not([data-wl="collapsed"]) &);
+@custom-variant ind-collapsed (html[data-ind="collapsed"] &);
+@custom-variant ind-expanded (html:not([data-ind="collapsed"]) &);
+@custom-variant pat-collapsed (html[data-pat="collapsed"] &);
+@custom-variant pat-expanded (html:not([data-pat="collapsed"]) &);
 
 /* Dark institutional palette (docs/PHAN-TICH-NANG-CAP.md, design §3.2). The terminal is dark-only. */
 :root {
