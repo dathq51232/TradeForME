@@ -4,13 +4,16 @@ import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from 
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { SHAPE_LABEL, SHAPE_POINTS, type ChartEvent, type Shape } from "./chart-overlay";
+import { NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { candlestickPatterns, chartPatterns, closeLevels, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
 
 export type Overlays = { trades: boolean; events: boolean };
 export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean };
-export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView };
+/** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
+export type AutoSettings = { chart: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; depth: number };
+export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
 type Initial = {
@@ -49,6 +52,26 @@ const RANGES: { label: string; seconds: number | null }[] = [
   { label: "Tất cả", seconds: null },
 ];
 const HISTORY = 50;
+const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; hint: string }[] = [
+  { key: "chart", label: "Mô hình giá", hint: "Tam giác tăng/giảm/cân, tam giác mở rộng (tam giác ngược), nêm, hai đỉnh/hai đáy, vai đầu vai" },
+  { key: "candles", label: "Mô hình nến", hint: "Búa, sao băng, nhấn chìm, harami, sao mai/sao hôm, ba chàng lính/ba con quạ, nhíp, marubozu…" },
+  { key: "levels", label: "Key level theo giá đóng cửa", hint: "Vùng giá nến hay đóng cửa và đảo chiều; nét đậm hơn = mạnh hơn" },
+  { key: "periods", label: "Giá đóng cửa ngày/tuần/tháng trước", hint: "Theo lịch UTC" },
+  { key: "sessions", label: "Phiên Sydney/Tokyo/London/New York", hint: "Khung cao-thấp của từng phiên (khung ≤ 1H) và giờ mở/đóng phiên" },
+];
+const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
+const STATUS_VI: Record<string, string> = { forming: "đang hình thành", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", expired: "hết hiệu lực" };
+
+/** Session boxes over the loaded bars: each session's high and low (sessions with no bars are skipped). */
+function sessionBoxes(bars: Bar[], step: number): AutoDraw["sessions"] {
+  if (!bars.length) return [];
+  const to = bars[bars.length - 1].time + step;
+  return sessionsBetween(bars[0].time, to).flatMap((s) => {
+    let high = -Infinity, low = Infinity;
+    for (const b of bars) if (b.time >= s.start && b.time < s.end) { high = Math.max(high, b.high); low = Math.min(low, b.low); }
+    return high > low ? [{ name: s.name, color: s.color, start: s.start, end: Math.min(s.end, to), high, low }] : [];
+  });
+}
 const COLORS = { up: "#00c087", down: "#f45b69", muted: "#8292a8", accent: "#4f8cff" };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const fmt = (v: number, d: number) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -98,6 +121,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [clock, setClock] = useState(0);
   const [notice, setNotice] = useState("");
   const [view, setView] = useState<ChartView>(initial.layout.view);
+  const [auto, setAuto] = useState<AutoSettings>(initial.layout.auto);
+  const [autoMenu, setAutoMenu] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState(false);
   const chartApi = useRef<ChartHandle>(null);
@@ -200,7 +225,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
-      const state = { symbol, tf, indicators, overlays, view };
+      const state = { symbol, tf, indicators, overlays, view, auto };
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return setSaveState("error");
       const res = ids.current.layout
@@ -209,7 +234,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       if (!ids.current.layout && res.data && "id" in res.data) ids.current.layout = res.data.id as string;
       setSaveState(res.error ? "error" : "saved");
     }, 800);
-  }, [symbol, tf, indicators, overlays, view, supabase]);
+  }, [symbol, tf, indicators, overlays, view, auto, supabase]);
 
   const saveWatchlist = async (list: string[]) => {
     setWatchlist(list);
@@ -386,6 +411,47 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const notInList = Object.keys(SYMBOLS).filter((s) => !watchlist.includes(s));
   const activeTool = TOOLS.find((t) => t.id === tool);
 
+  // ---------- automatic chart reading (all in the browser, on the loaded bars) ----------
+  const rawBars = data?.bars;
+  const step = tfSeconds(tf);
+  const found = useMemo(() => {
+    const bs = rawBars ?? [];
+    const periodLen = { day: 86400, week: 7 * 86400, month: 28 * 86400 };
+    return {
+      patterns: auto.chart && bs.length ? chartPatterns(bs, { depth: auto.depth, max: 6 }) : [],
+      // markers only on the latest bars, and without marubozu (a strong bar, not a reversal), to keep the chart readable
+      candles: auto.candles && bs.length ? candlestickPatterns(bs).filter((c) => c.i >= bs.length - 80 && !c.kind.endsWith("Marubozu")) : [],
+      levels: auto.levels && bs.length ? closeLevels(bs, { max: 6 }) : [],
+      periods: auto.periods && bs.length ? periodCloses(bs).filter((p) => step < periodLen[p.period]) : [],
+      sessions: auto.sessions && step <= 3600 ? sessionBoxes(bs, step) : [],
+    };
+  }, [rawBars, auto, step]);
+  const autoDraw = useMemo<AutoDraw>(() => {
+    if (!found.patterns.length && !found.levels.length && !found.periods.length && !found.sessions.length) return NO_AUTO;
+    return {
+      // the three newest patterns that still matter; older ones stay listed only while they are recent
+      patterns: found.patterns.filter((p) => p.status !== "expired").slice(0, 3),
+      levels: [
+        ...found.levels.map((l) => ({
+          price: l.price, from: l.first, color: l.side === "support" ? COLORS.up : COLORS.down, width: 0.5 + l.strength * 0.5, dashed: false,
+          label: `Key ${fmt(l.price, info.digits)} · ${l.swings} lần`,
+        })),
+        ...found.periods.map((p) => ({ price: p.price, from: p.time, color: COLORS.muted, width: 1, dashed: true, label: `${p.label} ${fmt(p.price, info.digits)}` })),
+      ],
+      sessions: found.sessions,
+    };
+  }, [found, info.digits]);
+  const chartMarkers = useMemo<TimedMarker[]>(() => [
+    ...tradeMarkers,
+    ...found.candles.map((c): TimedMarker => ({
+      time: c.time, position: c.bias < 0 ? "aboveBar" : "belowBar", shape: c.bias > 0 ? "arrowUp" : c.bias < 0 ? "arrowDown" : "circle",
+      color: c.bias > 0 ? COLORS.up : c.bias < 0 ? COLORS.down : COLORS.muted, text: c.name,
+    })),
+  ], [tradeMarkers, found.candles]);
+  const liveCandle = found.candles.filter((c) => c.i >= bars.length - 3).at(-1);
+  const sessionNow = auto.sessions && clock ? sessionStatus(Math.floor(clock / 1000)) : null;
+  const patternChips = found.patterns.filter((p) => p.status !== "expired").slice(0, 4);
+
   return (
     <div className="-m-4 flex min-h-[calc(100vh-7rem)] flex-col lg:-m-6 lg:flex-row">
       {/* Watchlist */}
@@ -504,6 +570,39 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             <button onClick={() => setOverlays((o) => ({ ...o, events: !o.events }))} title="Tin kinh tế ảnh hưởng mạnh/trung bình"
               className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
           </div>
+          <div className="relative">
+            <button onClick={() => setAutoMenu((m) => !m)} title="Tự nhận diện mô hình giá, mô hình nến, key level và phiên giao dịch"
+              className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${AUTO_LAYERS.some((l) => auto[l.key]) ? "border-accent/50 text-accent" : "border-border"}`}>🔍 Tự nhận diện</button>
+            {autoMenu && (
+              <div className="absolute right-0 z-20 mt-1 grid w-80 max-w-[90vw] gap-1.5 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+                {AUTO_LAYERS.map((l) => (
+                  <label key={l.key} className="flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 hover:bg-panel-2">
+                    <input type="checkbox" checked={auto[l.key]} onChange={(e) => setAuto((a) => ({ ...a, [l.key]: e.target.checked }))} className="mt-0.5" />
+                    <span><span className="block text-foreground">{l.label}</span><span className="text-muted">{l.hint}</span></span>
+                  </label>
+                ))}
+                <div className="flex items-center gap-2 px-1">
+                  <span className="text-muted">Độ nhạy mô hình giá</span>
+                  <span className="flex rounded border border-border">
+                    {DEPTHS.map((d) => (
+                      <button key={d.v} onClick={() => setAuto((a) => ({ ...a, depth: d.v }))} title={`Đỉnh/đáy cần ${d.v} nến mỗi bên`}
+                        className={`px-1.5 py-0.5 ${auto.depth === d.v ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}>{d.label}</button>
+                    ))}
+                  </span>
+                </div>
+                <p className="px-1 text-muted/80">Nhận diện tự động theo quy tắc, chỉ để tham khảo, không phải tín hiệu giao dịch. Mô hình chỉ được xác nhận khi giá đóng cửa phá qua đường biên.</p>
+                <button onClick={() => setAutoMenu(false)} className="rounded bg-accent px-2 py-1 text-white">Xong</button>
+              </div>
+            )}
+          </div>
+          {sessionNow && (
+            <span className="rounded border border-border px-1.5 py-0.5 text-xs text-muted" title="Giờ phiên theo giờ địa phương của từng trung tâm (đã tính giờ mùa hè)">
+              🕐 {sessionNow.open.length
+                ? sessionNow.open.map((s) => <span key={s.id} style={{ color: s.color }}>{s.name} </span>)
+                : "Ngoài phiên "}
+              {sessionNow.next && <>· {sessionNow.next.name} {sessionNow.next.kind === "open" ? "mở" : "đóng"} sau {countdown(sessionNow.next.at * 1000 - clock)}</>}
+            </span>
+          )}
           {nextHigh && clock > 0 && (
             <span className={`rounded border px-1.5 py-0.5 text-xs ${nextHigh.time * 1000 - clock < 3600_000 ? "border-down/50 text-down" : "border-border text-muted"}`}
               title={`Dự báo ${nextHigh.forecast ?? "—"} · Trước ${nextHigh.previous ?? "—"}`}>
@@ -516,7 +615,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         </div>
 
         {/* active indicators, drawings, alerts */}
-        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0) && (
+        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0 || patternChips.length > 0 || liveCandle) && (
           <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
             {activeTool && (
               <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
@@ -571,6 +670,18 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </span>
             ))}
             {hidden && (shapes.length > 0 || hlines.length > 0) && <span className="text-warn">Hình vẽ đang ẩn</span>}
+            {patternChips.map((p) => (
+              <span key={`${p.kind}${p.start}`} title={`${new Date(p.start * 1000).toLocaleString("vi-VN")} → ${new Date(p.end * 1000).toLocaleString("vi-VN")}${p.target != null ? ` · mục tiêu ${fmt(p.target, info.digits)}` : ""}`}
+                className={`rounded border px-1.5 py-0.5 ${p.bias > 0 ? "border-up/40 text-up" : p.bias < 0 ? "border-down/40 text-down" : "border-warn/40 text-warn"}`}>
+                ◆ {p.name} · {STATUS_VI[p.status]}{p.target != null ? ` → ${fmt(p.target, info.digits)}` : ""}
+              </span>
+            ))}
+            {liveCandle && (
+              <span className={`rounded border px-1.5 py-0.5 ${liveCandle.bias > 0 ? "border-up/40 text-up" : liveCandle.bias < 0 ? "border-down/40 text-down" : "border-border text-muted"}`}
+                title="Mô hình nến trên 3 nến gần nhất (nến cuối có thể chưa đóng)">
+                🕯 {liveCandle.name}
+              </span>
+            )}
             {recent.map((e) => (
               <span key={`${e.country}${e.title}${e.time}`} className="rounded border border-down/40 px-1.5 py-0.5 text-down" title="Tin mạnh trong 6 giờ qua">
                 📰 {e.country} {e.title}: thực tế {e.actual ?? "—"} / dự báo {e.forecast ?? "—"}
@@ -583,7 +694,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
           <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
             chartType={view.type} scaleMode={view.scale} magnet={view.magnet}
-            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} tradeMarkers={tradeMarkers} tradeLines={tradeLines}
+            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines}
             tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (

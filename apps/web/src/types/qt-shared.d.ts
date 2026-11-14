@@ -38,6 +38,27 @@ declare module "@qt/core/series" {
   export function nativeBase(tf: string, natives: string[]): string | null;
 }
 
+declare module "@qt/core/patterns" {
+  type P = { t: number; p: number };
+  export type PatternStatus = "forming" | "breakoutUp" | "breakoutDown" | "expired";
+  export type ChartPattern = {
+    kind: string; name: string; bias: -1 | 0 | 1; status: PatternStatus; start: number; end: number; target: number | null;
+    lines: { role: "upper" | "lower" | "path" | "neck"; a: P; b: P }[]; label: P;
+  };
+  export type CandlePattern = { i: number; time: number; kind: string; name: string; bias: -1 | 0 | 1 };
+  export type CloseLevel = { price: number; swings: number; touches: number; first: number; last: number; strength: 1 | 2 | 3; side: "support" | "resistance" };
+  export type PeriodClose = { period: "day" | "week" | "month"; label: string; price: number; time: number };
+  export type Session = { id: string; name: string; color: string; start: number; end: number };
+  export const SESSIONS: { id: string; name: string; tz: string; open: number; close: number; color: string }[];
+  export function swingPivots(bars: Bar[], depth?: number): { i: number; time: number; price: number; kind: "H" | "L" }[];
+  export function chartPatterns(bars: Bar[], opts?: { depth?: number; max?: number }): ChartPattern[];
+  export function candlestickPatterns(bars: Bar[], opts?: { doji?: boolean }): CandlePattern[];
+  export function closeLevels(bars: Bar[], opts?: { lookback?: number; max?: number; depth?: number }): CloseLevel[];
+  export function periodCloses(bars: Bar[]): PeriodClose[];
+  export function sessionsBetween(from: number, to: number): Session[];
+  export function sessionStatus(now: number): { open: { id: string; name: string; color: string; end: number }[]; next: { name: string; kind: "open" | "close"; at: number } | null };
+}
+
 declare module "@qt/core/indicators" {
   export type IndicatorInput = { key: string; label: string; type: string; default: unknown; min?: number; max?: number; options?: string[] };
   export type IndicatorOutput = { key: string; label: string; kind: "line" | "histogram"; color: string; dots?: boolean; lineWidth?: number };

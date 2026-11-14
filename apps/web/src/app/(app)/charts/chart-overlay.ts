@@ -89,12 +89,22 @@ function span(seconds: number): string {
   return `${Math.round(s / 60)} phút`;
 }
 
+/** What automatic chart reading asks the overlay to draw (computed by @qt/core/patterns). */
+export type AutoDraw = {
+  patterns: { name: string; status: string; bias: number; target: number | null; end: number; label: Pt; lines: { role: string; a: Pt; b: Pt }[] }[];
+  levels: { price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
+  sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
+};
+export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [] };
+const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", expired: "hết hiệu lực" };
+
 export class ChartOverlay implements ISeriesPrimitive<Time> {
   shapes: Shape[] = [];
   preview: Shape | null = null;
   selected: string | null = null;
   hidden = false;
   events: ChartEvent[] = [];
+  auto: AutoDraw = NO_AUTO;
   index = new TimeIndex([], 3600);
   digits = 2;
   private chart: IChartApi | null = null;
@@ -107,7 +117,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     this.request = p.requestUpdate;
   }
   detached() { this.chart = null; this.series = null; this.request = null; }
-  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "index" | "digits">>) {
+  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "auto" | "index" | "digits">>) {
     Object.assign(this, patch);
     this.request?.();
   }
@@ -177,11 +187,94 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
   }
 
   private renderer: IPrimitivePaneRenderer = {
-    draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => this.drawShapes(s)),
-    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => this.drawEvents(s)),
+    draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawPatterns(s); this.drawShapes(s); }),
+    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawSessions(s); this.drawLevels(s); this.drawEvents(s); }),
   };
   private view: IPrimitivePaneView = { zOrder: (): PrimitivePaneViewZOrder => "top", renderer: () => this.renderer };
   paneViews() { return [this.view]; }
+
+  /** Session boxes: from the session's open to its close, spanning the high and low traded inside it. */
+  private drawSessions({ context: ctx, mediaSize }: Media) {
+    if (!this.auto.sessions.length) return;
+    ctx.save();
+    ctx.font = "10px system-ui, sans-serif";
+    for (const s of this.auto.sessions) {
+      const x1 = this.x(s.start), x2 = this.x(s.end), yh = this.y(s.high), yl = this.y(s.low);
+      if (x1 == null || x2 == null || yh == null || yl == null || x2 < 0 || x1 > mediaSize.width) continue;
+      ctx.globalAlpha = 0.07;
+      ctx.fillStyle = s.color;
+      ctx.fillRect(x1, yh, x2 - x1, yl - yh);
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = s.color;
+      ctx.setLineDash([2, 3]);
+      ctx.strokeRect(x1, yh, x2 - x1, yl - yh);
+      if (x2 - x1 > 34) {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = s.color;
+        ctx.fillText(s.name, x1 + 2, yh - 3);
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Key levels and previous-period closes: a line from where the level starts to the right edge, label on the right. */
+  private drawLevels({ context: ctx, mediaSize }: Media) {
+    if (!this.auto.levels.length) return;
+    ctx.save();
+    ctx.font = "10px system-ui, sans-serif";
+    for (const l of this.auto.levels) {
+      const y = this.y(l.price);
+      if (y == null || y < 0 || y > mediaSize.height) continue;
+      const x0 = Math.max(0, Math.min(this.x(l.from) ?? 0, mediaSize.width - 140));
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = l.color;
+      ctx.lineWidth = l.width;
+      ctx.setLineDash(l.dashed ? [5, 4] : []);
+      ctx.beginPath(); ctx.moveTo(x0, Math.round(y) + 0.5); ctx.lineTo(mediaSize.width, Math.round(y) + 0.5); ctx.stroke();
+      const text = l.label;
+      const w = ctx.measureText(text).width;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = l.color;
+      ctx.fillText(text, mediaSize.width - w - 8, y - 3);
+    }
+    ctx.restore();
+  }
+
+  /** Detected chart patterns: their lines, name and status, and the measured-move target after a breakout. */
+  private drawPatterns({ context: ctx }: Media) {
+    if (!this.auto.patterns.length) return;
+    ctx.save();
+    ctx.font = "11px system-ui, sans-serif";
+    for (const pat of this.auto.patterns) {
+      const color = pat.bias > 0 ? COLOR.up : pat.bias < 0 ? COLOR.down : COLOR.medium;
+      const faded = pat.status === "expired";
+      for (const l of pat.lines) {
+        const a = this.xy(l.a), b = this.xy(l.b);
+        if (!a || !b) continue;
+        ctx.globalAlpha = faded ? 0.35 : 0.85;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = l.role === "path" ? 1 : 1.5;
+        ctx.setLineDash(l.role === "neck" ? [6, 4] : []);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      const at = this.xy(pat.label);
+      if (at) this.label(ctx, `${pat.name} · ${STATUS_TEXT[pat.status] ?? pat.status}`, at.x, at.y - 8, faded ? COLOR.low : color);
+      if (pat.target != null && !faded) {
+        const xe = this.x(pat.end), yt = this.y(pat.target);
+        if (xe != null && yt != null) {
+          ctx.globalAlpha = 0.8;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 3]);
+          ctx.beginPath(); ctx.moveTo(xe, yt); ctx.lineTo(xe + 70, yt); ctx.stroke();
+          ctx.font = "10px system-ui, sans-serif";
+          this.label(ctx, `Mục tiêu ${pat.target.toFixed(this.digits)}`, xe + 2, yt - 4, color);
+          ctx.font = "11px system-ui, sans-serif";
+        }
+      }
+    }
+    ctx.restore();
+  }
 
   private drawEvents({ context: ctx, mediaSize }: Media) {
     ctx.save();

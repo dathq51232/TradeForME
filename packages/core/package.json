@@ -11,7 +11,8 @@
     "./backtest": "./src/backtest.js",
     "./quant": "./src/quant.js",
     "./seasonals": "./src/seasonals.js",
-    "./volume-profile": "./src/volume-profile.js"
+    "./volume-profile": "./src/volume-profile.js",
+    "./patterns": "./src/patterns.js"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

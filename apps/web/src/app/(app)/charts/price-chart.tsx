@@ -5,7 +5,7 @@ import {
   type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
-import { ChartOverlay, SHAPE_POINTS, TimeIndex, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, SHAPE_POINTS, TimeIndex, type AutoDraw, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown> };
@@ -72,6 +72,8 @@ type Props = {
   selected: string | null;
   magnet: boolean;
   events: ChartEvent[];
+  /** Detected patterns, key levels and session boxes. */
+  auto: AutoDraw;
   tradeMarkers: TimedMarker[];
   tradeLines: PriceLineSpec[];
   tool: Tool;
@@ -88,7 +90,7 @@ type Props = {
  * events and copy-trade activity, on Lightweight Charts v5. The library's attribution logo stays on (licence).
  */
 export function PriceChart(props: Props) {
-  const { bars, digits, barSeconds, chartType, scaleMode, indicators, hlines, shapes, hidden, selected, events, tradeMarkers, tradeLines, tool, viewKey, ref } = props;
+  const { bars, digits, barSeconds, chartType, scaleMode, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref } = props;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const main = useRef<ISeriesApi<SeriesType> | null>(null);
@@ -298,6 +300,7 @@ export function PriceChart(props: Props) {
 
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);
+  useEffect(() => { overlay.current.update({ auto }); }, [auto]);
 
   // horizontal lines (bell = price alert armed) and open copy-trade positions
   useEffect(() => {

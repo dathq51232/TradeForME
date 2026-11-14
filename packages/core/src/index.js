@@ -5,3 +5,4 @@ export * as backtest from "./backtest.js";
 export * as quant from "./quant.js";
 export * as seasonals from "./seasonals.js";
 export { VolumeProfile, SessionVolumeProfile } from "./volume-profile.js";
+export * as patterns from "./patterns.js";
