@@ -3,13 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
-import { PriceChart, type ActiveIndicator, type Bar, type PriceLineSpec, type TimedMarker, type Tool } from "./price-chart";
-import { SHAPE_LABEL, type ChartEvent, type Shape, type ShapeKind } from "./chart-overlay";
+import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
+import { SHAPE_LABEL, SHAPE_POINTS, type ChartEvent, type Shape } from "./chart-overlay";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
 
 export type Overlays = { trades: boolean; events: boolean };
-export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays };
+export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean };
+export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
 type Initial = {
@@ -24,13 +25,30 @@ type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; note?: str
 const SKIP = new Set(["vpvr", "svp", "avwap", "markov", "zigzag", "pivots", "pivotshl"]);
 const MENU = INDICATORS.filter((d) => !SKIP.has(d.id) && (d.outputs?.length ?? 0) > 0);
 const QUICK = ["ema", "sma", "bb", "vwap", "supertrend", "rsi", "macd", "atr", "volume"];
-const TOOLS: { id: Exclude<Tool, null>; icon: string; label: string; hint: string }[] = [
-  { id: "hline", icon: "―", label: "Đường ngang", hint: "click 1 lần" },
-  { id: "trend", icon: "╱", label: "Xu hướng", hint: "click 2 điểm" },
-  { id: "ray", icon: "↗", label: "Tia", hint: "click 2 điểm, kéo dài sang phải" },
-  { id: "rect", icon: "▭", label: "Vùng", hint: "click 2 góc" },
-  { id: "fib", icon: "𝑓", label: "Fibonacci", hint: "click đáy rồi đỉnh (hoặc ngược lại)" },
+// Our own glyphs and wording; tools are grouped as lines, shapes, measuring and notes.
+const TOOLS: { id: Exclude<Tool, null>; icon: string; label: string; hint: string; group: number }[] = [
+  { id: "hline", icon: "―", label: "Đường ngang (đặt được cảnh báo)", hint: "click 1 lần", group: 0 },
+  { id: "hray", icon: "→", label: "Tia ngang", hint: "click 1 lần, kéo dài sang phải", group: 0 },
+  { id: "vline", icon: "│", label: "Đường dọc", hint: "click 1 lần", group: 0 },
+  { id: "trend", icon: "╱", label: "Đường xu hướng", hint: "click 2 điểm", group: 0 },
+  { id: "ray", icon: "↗", label: "Tia", hint: "click 2 điểm, kéo dài theo hướng", group: 0 },
+  { id: "channel", icon: "▱", label: "Kênh song song", hint: "click 2 điểm cho cạnh đầu, điểm thứ 3 cho độ rộng", group: 1 },
+  { id: "rect", icon: "▭", label: "Vùng chữ nhật", hint: "click 2 góc", group: 1 },
+  { id: "fib", icon: "𝑓", label: "Fibonacci thoái lui", hint: "click đáy rồi đỉnh (hoặc ngược lại)", group: 1 },
+  { id: "measure", icon: "⇕", label: "Đo giá và thời gian", hint: "click điểm đầu và điểm cuối", group: 2 },
+  { id: "position", icon: "⚖", label: "Vị thế: vào lệnh, dừng lỗ, chốt lời", hint: "click giá vào, rồi dừng lỗ, rồi chốt lời", group: 2 },
+  { id: "text", icon: "T", label: "Ghi chú", hint: "click vị trí rồi nhập nội dung", group: 2 },
 ];
+const CHART_TYPES: { id: ChartType; label: string }[] = [
+  { id: "candles", label: "Nến" }, { id: "hollow", label: "Nến rỗng" }, { id: "heikin", label: "Heikin Ashi" },
+  { id: "bars", label: "Thanh OHLC" }, { id: "line", label: "Đường" }, { id: "area", label: "Vùng" },
+];
+const RANGES: { label: string; seconds: number | null }[] = [
+  { label: "1N", seconds: 86400 }, { label: "5N", seconds: 5 * 86400 }, { label: "1T", seconds: 30 * 86400 },
+  { label: "3T", seconds: 90 * 86400 }, { label: "6T", seconds: 180 * 86400 }, { label: "1Năm", seconds: 365 * 86400 },
+  { label: "Tất cả", seconds: null },
+];
+const HISTORY = 50;
 const COLORS = { up: "#00c087", down: "#f45b69", muted: "#8292a8", accent: "#4f8cff" };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const fmt = (v: number, d: number) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -79,6 +97,12 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
   const [clock, setClock] = useState(0);
   const [notice, setNotice] = useState("");
+  const [view, setView] = useState<ChartView>(initial.layout.view);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [hidden, setHidden] = useState(false);
+  const chartApi = useRef<ChartHandle>(null);
+  const shell = useRef<HTMLElement>(null);
+  const history = useRef<Record<string, { hlines: number[]; shapes: Shape[] }[]>>({});
   const info = SYMBOLS[symbol];
   const supabase = useMemo(() => (signedIn ? createClient() : null), [signedIn]);
   const ids = useRef({ layout: initial.layoutId, watchlist: initial.watchlistId });
@@ -151,11 +175,6 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     const first = setTimeout(tick, 0);
     return () => { clearInterval(t); clearTimeout(first); };
   }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setTool(null); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   // ---------- watchlist quotes ----------
   useEffect(() => {
@@ -181,7 +200,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
-      const state = { symbol, tf, indicators, overlays };
+      const state = { symbol, tf, indicators, overlays, view };
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return setSaveState("error");
       const res = ids.current.layout
@@ -190,7 +209,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       if (!ids.current.layout && res.data && "id" in res.data) ids.current.layout = res.data.id as string;
       setSaveState(res.error ? "error" : "saved");
     }, 800);
-  }, [symbol, tf, indicators, overlays, supabase]);
+  }, [symbol, tf, indicators, overlays, view, supabase]);
 
   const saveWatchlist = async (list: string[]) => {
     setWatchlist(list);
@@ -205,11 +224,17 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   };
 
   // ---------- drawings: horizontal lines and shapes, one row per symbol ----------
+  const alertAt = (price: number) => alerts.find((a) => a.symbol === symbol && Math.abs(a.price - price) < 1e-9);
   const mine = drawings[symbol];
   const hlinePrices = useMemo(() => mine?.hlines ?? [], [mine]);
   const shapes = useMemo(() => mine?.shapes ?? [], [mine]);
-  const saveDrawing = async (next: { hlines: number[]; shapes: Shape[] }) => {
+  const saveDrawing = async (next: { hlines: number[]; shapes: Shape[] }, undoable = true) => {
     const current = drawings[symbol];
+    if (undoable) {
+      const h = (history.current[symbol] ??= []);
+      h.push({ hlines: current?.hlines ?? [], shapes: current?.shapes ?? [] });
+      if (h.length > HISTORY) h.shift();
+    }
     setDrawings((d) => ({ ...d, [symbol]: { id: current?.id ?? "", ...next } }));
     if (!supabase) return;
     const { data: auth } = await supabase.auth.getUser();
@@ -227,13 +252,72 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     setTool(null);
   };
   const addShape = (s: Shape) => {
-    const round = (x: number) => Number(x.toFixed(info.digits));
-    void saveDrawing({ hlines: hlinePrices, shapes: [...shapes, { ...s, a: { ...s.a, p: round(s.a.p) }, b: { ...s.b, p: round(s.b.p) } }] });
+    const r = (pt: { t: number; p: number }) => ({ t: pt.t, p: Number(pt.p.toFixed(info.digits)) });
+    void saveDrawing({ hlines: hlinePrices, shapes: [...shapes, { ...s, a: r(s.a), b: r(s.b), ...(s.c ? { c: r(s.c) } : {}) }] });
     setTool(null);
+  };
+  const removeShape = (id: string) => {
+    void saveDrawing({ hlines: hlinePrices, shapes: shapes.filter((x) => x.id !== id) });
+    setSelected(null);
+  };
+  /** Undo the last change to this symbol's drawings. Lines with an armed alert are kept (their alert lives on). */
+  const undo = () => {
+    const prevState = history.current[symbol]?.pop();
+    if (!prevState) return setNotice("Không còn gì để hoàn tác.");
+    const armed = hlinePrices.filter((p) => alertAt(p));
+    void saveDrawing({ hlines: [...new Set([...prevState.hlines, ...armed])].sort((a, b) => b - a), shapes: prevState.shapes }, false);
+    setSelected(null);
+  };
+  const clearAll = () => {
+    if (!shapes.length && !hlinePrices.length) return;
+    if (!window.confirm(`Xoá toàn bộ hình vẽ của ${symbol}? Các đường đang có cảnh báo được giữ lại. Có thể hoàn tác bằng Ctrl+Z.`)) return;
+    void saveDrawing({ hlines: hlinePrices.filter((p) => alertAt(p)), shapes: [] });
+    setSelected(null);
+  };
+
+  // keyboard: Esc cancels, Delete removes the selected shape, Ctrl+Z undoes
+  const keys = useRef({ undo, removeShape, selected });
+  useEffect(() => { keys.current = { undo, removeShape, selected }; });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+      if (e.key === "Escape") { setTool(null); setSelected(null); }
+      else if ((e.key === "Delete" || e.key === "Backspace") && keys.current.selected) { e.preventDefault(); keys.current.removeShape(keys.current.selected); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); keys.current.undo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // ---------- snapshot and full screen ----------
+  const screenshot = () => {
+    const shot = chartApi.current?.screenshot();
+    if (!shot) return;
+    const out = document.createElement("canvas");
+    out.width = shot.width; out.height = shot.height;
+    const ctx = out.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(shot, 0, 0);
+    const scale = shot.width / Math.max(1, shot.clientWidth || shot.width);
+    ctx.font = `${Math.round(12 * (scale || 1))}px system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(201,212,227,0.9)";
+    ctx.fillText(`${symbol} · ${tfInfo.label} · ${new Date().toLocaleString("vi-VN")}`, 8, shot.height - 10);
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${symbol}_${tf}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, "image/png");
+  };
+  const fullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void shell.current?.requestFullscreen?.();
   };
 
   // ---------- price alerts on horizontal lines (checked by the server every minute) ----------
-  const alertAt = (price: number) => alerts.find((a) => a.symbol === symbol && Math.abs(a.price - price) < 1e-9);
   const removeLine = async (price: number) => {
     const a = alertAt(price);
     if (a && supabase) { await supabase.from("alerts").delete().eq("id", a.id); setAlerts((xs) => xs.filter((x) => x.id !== a.id)); }
@@ -321,7 +405,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             const active = s === symbol;
             return (
               <li key={s} className="group relative shrink-0">
-                <button onClick={() => { setSymbol(s); setTool(null); }}
+                <button onClick={() => { setSymbol(s); setTool(null); setSelected(null); }}
                   className={`flex w-44 items-center justify-between gap-2 px-3 py-2 text-left text-sm lg:w-full ${active ? "bg-accent/15" : "hover:bg-panel-2"}`}>
                   <span>
                     <span className="block font-medium">{s}</span>
@@ -343,7 +427,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       </aside>
 
       {/* Chart area */}
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section ref={shell} className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <div className="mr-2">
             <span className="text-base font-semibold">{symbol}</span>
@@ -384,11 +468,33 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </div>
             )}
           </div>
+          <select aria-label="Kiểu biểu đồ" value={view.type} onChange={(e) => setView((v) => ({ ...v, type: e.target.value as ChartType }))} className="py-0.5 text-xs">
+            {CHART_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
           <div className="flex rounded-md border border-border" role="group" aria-label="Công cụ vẽ">
-            {TOOLS.map((t) => (
-              <button key={t.id} onClick={() => setTool((x) => (x === t.id ? null : t.id))} title={`${t.label}: ${t.hint}`}
-                className={`px-2 py-1 text-xs ${tool === t.id ? "bg-warn/20 text-warn" : "text-muted hover:text-foreground"}`}>{t.icon}</button>
+            {TOOLS.map((t, k) => (
+              <button key={t.id} onClick={() => { setSelected(null); setTool((x) => (x === t.id ? null : t.id)); }} title={`${t.label}: ${t.hint}`}
+                className={`px-2 py-1 text-xs ${k > 0 && TOOLS[k - 1].group !== t.group ? "border-l border-border" : ""} ${tool === t.id ? "bg-warn/20 text-warn" : "text-muted hover:text-foreground"}`}>{t.icon}</button>
             ))}
+          </div>
+          <div className="flex rounded-md border border-border text-xs" role="group" aria-label="Quản lý hình vẽ">
+            <button onClick={() => setView((v) => ({ ...v, magnet: !v.magnet }))} title="Nam châm: điểm vẽ bám vào giá mở/cao/thấp/đóng của nến gần nhất"
+              className={`px-2 py-1 ${view.magnet ? "bg-accent/20 text-accent" : "text-muted hover:text-foreground"}`}>🧲</button>
+            <button onClick={() => setHidden((h) => !h)} title={hidden ? "Hiện hình vẽ" : "Ẩn hình vẽ"}
+              className={`px-2 py-1 ${hidden ? "bg-warn/20 text-warn" : "text-muted hover:text-foreground"}`}>{hidden ? "◌" : "◉"}</button>
+            <button onClick={undo} title="Hoàn tác (Ctrl+Z)" className="px-2 py-1 text-muted hover:text-foreground">↶</button>
+            <button onClick={clearAll} title="Xoá toàn bộ hình vẽ của mã này" className="px-2 py-1 text-muted hover:text-down">🗑</button>
+          </div>
+          <div className="flex rounded-md border border-border text-xs" role="group" aria-label="Thang giá">
+            {(["log", "percent"] as const).map((m) => (
+              <button key={m} onClick={() => setView((v) => ({ ...v, scale: v.scale === m ? "normal" : m }))}
+                title={m === "log" ? "Thang logarit" : "Thang phần trăm (so với nến đầu tiên đang hiển thị)"}
+                className={`px-2 py-1 ${view.scale === m ? "bg-accent/20 text-accent" : "text-muted hover:text-foreground"}`}>{m === "log" ? "Log" : "%"}</button>
+            ))}
+          </div>
+          <div className="flex rounded-md border border-border text-xs">
+            <button onClick={screenshot} title="Tải ảnh biểu đồ (PNG)" className="px-2 py-1 text-muted hover:text-foreground">📷</button>
+            <button onClick={fullscreen} title="Toàn màn hình" className="px-2 py-1 text-muted hover:text-foreground">⛶</button>
           </div>
           <div className="flex rounded-md border border-border text-xs">
             {signedIn && (
@@ -414,7 +520,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
             {activeTool && (
               <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
-                {activeTool.label}: {activeTool.hint} · Esc để huỷ
+                {activeTool.label}: {activeTool.hint}{activeTool.id !== "hline" && SHAPE_POINTS[activeTool.id] > 1 && view.magnet ? " · nam châm bật" : ""} · Esc để huỷ
               </span>
             )}
             {indicators.map((ind) => {
@@ -457,11 +563,14 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </span>
             ))}
             {shapes.map((s) => (
-              <span key={s.id} className="inline-flex items-center gap-1 rounded border border-accent/40 px-1.5 py-0.5 text-accent">
-                {TOOLS.find((t) => t.id === s.kind)?.icon} {SHAPE_LABEL[s.kind as ShapeKind]}
-                <button onClick={() => saveDrawing({ hlines: hlinePrices, shapes: shapes.filter((x) => x.id !== s.id) })} className="hover:text-down" title="Xoá">×</button>
+              <span key={s.id} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${s.id === selected ? "border-warn bg-warn/10 text-warn" : "border-accent/40 text-accent"}`}>
+                <button onClick={() => setSelected(s.id === selected ? null : s.id)} title="Chọn (Delete để xoá)">
+                  {TOOLS.find((t) => t.id === s.kind)?.icon} {s.kind === "text" && s.text ? `“${s.text.slice(0, 20)}”` : SHAPE_LABEL[s.kind]}
+                </button>
+                <button onClick={() => removeShape(s.id)} className="hover:text-down" title="Xoá">×</button>
               </span>
             ))}
+            {hidden && (shapes.length > 0 || hlines.length > 0) && <span className="text-warn">Hình vẽ đang ẩn</span>}
             {recent.map((e) => (
               <span key={`${e.country}${e.title}${e.time}`} className="rounded border border-down/40 px-1.5 py-0.5 text-down" title="Tin mạnh trong 6 giờ qua">
                 📰 {e.country} {e.title}: thực tế {e.actual ?? "—"} / dự báo {e.forecast ?? "—"}
@@ -472,9 +581,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         )}
 
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
-          <PriceChart bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
-            hlines={hlines} shapes={shapes} events={events} tradeMarkers={tradeMarkers} tradeLines={tradeLines}
-            tool={tool} onAddLine={addLine} onAddShape={addShape} viewKey={key} />
+          <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
+            chartType={view.type} scaleMode={view.scale} magnet={view.magnet}
+            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} tradeMarkers={tradeMarkers} tradeLines={tradeLines}
+            tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (
             <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>
@@ -482,6 +592,12 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         </div>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-3 py-1.5 text-xs text-muted">
+          <span className="flex gap-0.5" role="group" aria-label="Khoảng thời gian hiển thị">
+            {RANGES.map((r) => (
+              <button key={r.label} onClick={() => chartApi.current?.showRange(r.seconds)} className="rounded px-1.5 py-0.5 hover:bg-panel-2 hover:text-foreground">{r.label}</button>
+            ))}
+            <button onClick={() => chartApi.current?.toLatest()} title="Về nến mới nhất" className="rounded px-1.5 py-0.5 hover:bg-panel-2 hover:text-foreground">⇥</button>
+          </span>
           {data?.source && (
             <span className={`rounded border px-1.5 py-0.5 ${data.realtime ? "border-up/40 text-up" : "border-warn/40 text-warn"}`}>
               {data.realtime ? "● Realtime" : "▲ Trễ / tham khảo"}

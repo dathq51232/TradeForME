@@ -2,10 +2,16 @@ Quant Terminal
 Copyright (c) 2026 Lewis Jackson. MIT licence (see LICENSE).
 
 This product includes TradingView Lightweight Charts(TM)
-(public/vendor/lightweight-charts.standalone.production.js),
+(npm package "lightweight-charts", bundled into the web app),
 Copyright (c) 2026 TradingView, Inc., licensed under the Apache License 2.0
-(public/vendor/lightweight-charts.LICENSE). https://www.tradingview.com/
-The chart keeps TradingView's attribution logo, as that licence asks.
+(node_modules/lightweight-charts/LICENSE). https://www.tradingview.com/
+The chart keeps TradingView's attribution logo (layout.attributionLogo), as that
+licence asks.
+
+The chart toolbar, drawing tools, legend, icons and wording are this project's own
+work. They do not copy TradingView's code, icons, artwork or layouts, and saved
+TradingView chart layouts are not imported. Indicator formulas follow published
+public definitions (e.g. Wilder's RSI); the code implementing them is our own.
 
 Quant Terminal is an independent project. It is not affiliated with, endorsed by,
 or connected to TradingView, Inc. "TradingView" is a trademark of TradingView, Inc.

@@ -3,7 +3,7 @@ import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
 import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import type { Shape } from "./chart-overlay";
+import { SHAPE_KINDS, SHAPE_POINTS, type Shape } from "./chart-overlay";
 
 export default function ChartsPage(props: PageProps<"/charts">) {
   return (
@@ -17,8 +17,11 @@ const DEFAULT_LAYOUT: LayoutState = {
   symbol: "XAUUSD", tf: "1h",
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
   overlays: { trades: true, events: true },
+  view: { type: "candles", scale: "normal", magnet: false },
 };
-const KINDS = new Set(["trend", "ray", "rect", "fib"]);
+const KINDS = new Set<string>(SHAPE_KINDS);
+const CHART_TYPES = new Set(["candles", "hollow", "heikin", "bars", "line", "area"]);
+const SCALES = new Set(["normal", "log", "percent"]);
 const isPt = (p: unknown): p is { t: number; p: number } =>
   !!p && typeof (p as { t: unknown }).t === "number" && typeof (p as { p: unknown }).p === "number";
 
@@ -32,6 +35,11 @@ function cleanLayout(raw: unknown): LayoutState {
       ? s.indicators.filter((i) => i && BY_ID[i.id]).slice(0, 12).map((i) => ({ uid: String(i.uid), id: i.id, params: i.params ?? {} }))
       : DEFAULT_LAYOUT.indicators,
     overlays: { trades: s.overlays?.trades !== false, events: s.overlays?.events !== false },
+    view: {
+      type: s.view?.type && CHART_TYPES.has(s.view.type) ? s.view.type : DEFAULT_LAYOUT.view.type,
+      scale: s.view?.scale && SCALES.has(s.view.scale) ? s.view.scale : DEFAULT_LAYOUT.view.scale,
+      magnet: s.view?.magnet === true,
+    },
   };
 }
 
@@ -39,8 +47,12 @@ function cleanDrawing(id: string, data: unknown): SymbolDrawings {
   const d = (data ?? {}) as { hlines?: unknown; shapes?: unknown };
   const hlines = Array.isArray(d.hlines) ? d.hlines.filter((x): x is number => typeof x === "number") : [];
   const shapes = Array.isArray(d.shapes)
-    ? (d.shapes as Shape[]).filter((s) => s && KINDS.has(s.kind) && isPt(s.a) && isPt(s.b)).slice(0, 100)
-        .map((s) => ({ id: String(s.id), kind: s.kind, a: s.a, b: s.b }))
+    ? (d.shapes as Shape[]).filter((s) => s && KINDS.has(s.kind) && isPt(s.a) && isPt(s.b) && (SHAPE_POINTS[s.kind] < 3 || isPt(s.c))).slice(0, 100)
+        .map((s) => ({
+          id: String(s.id), kind: s.kind, a: s.a, b: s.b,
+          ...(isPt(s.c) ? { c: s.c } : {}),
+          ...(typeof s.text === "string" ? { text: s.text.slice(0, 120) } : {}),
+        }))
     : [];
   return { id, hlines, shapes };
 }
