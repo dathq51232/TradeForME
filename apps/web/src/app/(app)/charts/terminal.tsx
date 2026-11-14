@@ -1,15 +1,22 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval } from "@qt/shared/market";
+import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
-import { PriceChart, type ActiveIndicator, type Bar } from "./price-chart";
+import { PriceChart, type ActiveIndicator, type Bar, type PriceLineSpec, type TimedMarker, type Tool } from "./price-chart";
+import { SHAPE_LABEL, type ChartEvent, type Shape, type ShapeKind } from "./chart-overlay";
+import type { TradesResponse } from "@/app/api/trades/route";
+import type { CalendarEvent } from "@/app/api/calendar/route";
 
-export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[] };
+export type Overlays = { trades: boolean; events: boolean };
+export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays };
+export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
+export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
 type Initial = {
   layout: LayoutState; layoutId: string | null;
   watchlist: string[]; watchlistId: string | null;
-  drawings: Record<string, { id: string; hlines: number[] }>;
+  drawings: Record<string, SymbolDrawings>;
+  alerts: PriceAlert[];
 };
 type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; note?: string; error?: string };
 
@@ -17,8 +24,22 @@ type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; note?: str
 const SKIP = new Set(["vpvr", "svp", "avwap", "markov", "zigzag", "pivots", "pivotshl"]);
 const MENU = INDICATORS.filter((d) => !SKIP.has(d.id) && (d.outputs?.length ?? 0) > 0);
 const QUICK = ["ema", "sma", "bb", "vwap", "supertrend", "rsi", "macd", "atr", "volume"];
+const TOOLS: { id: Exclude<Tool, null>; icon: string; label: string; hint: string }[] = [
+  { id: "hline", icon: "―", label: "Đường ngang", hint: "click 1 lần" },
+  { id: "trend", icon: "╱", label: "Xu hướng", hint: "click 2 điểm" },
+  { id: "ray", icon: "↗", label: "Tia", hint: "click 2 điểm, kéo dài sang phải" },
+  { id: "rect", icon: "▭", label: "Vùng", hint: "click 2 góc" },
+  { id: "fib", icon: "𝑓", label: "Fibonacci", hint: "click đáy rồi đỉnh (hoặc ngược lại)" },
+];
+const COLORS = { up: "#00c087", down: "#f45b69", muted: "#8292a8", accent: "#4f8cff" };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const fmt = (v: number, d: number) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+async function fetchJson<T>(url: string, fallback: T): Promise<T> {
+  try {
+    const r = await fetch(url);
+    return r.ok ? ((await r.json()) as T) : fallback;
+  } catch { return fallback; }
+}
 async function fetchBars(symbol: string, tf: string, limit: number): Promise<BarsResponse> {
   try {
     const r = await fetch(`/api/bars?symbol=${symbol}&tf=${tf}&limit=${limit}`);
@@ -30,22 +51,34 @@ async function fetchBars(symbol: string, tf: string, limit: number): Promise<Bar
 }
 const paramText = (ind: ActiveIndicator) =>
   Object.entries(ind.params).filter(([, v]) => typeof v === "number").map(([, v]) => v).join(", ");
+const countdown = (ms: number) => {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  return d ? `${d}n ${h}g` : h ? `${h}g ${mm}p` : `${mm}p`;
+};
+const NO_TRADES: TradesResponse = { trades: [], positions: [] };
 
 export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedIn: boolean }) {
   const [symbol, setSymbol] = useState(initial.layout.symbol);
   const [tf, setTf] = useState(initial.layout.tf);
   const [indicators, setIndicators] = useState<ActiveIndicator[]>(initial.layout.indicators);
+  const [overlays, setOverlays] = useState<Overlays>(initial.layout.overlays);
   const [watchlist, setWatchlist] = useState(initial.watchlist);
   const [drawings, setDrawings] = useState(initial.drawings);
+  const [alerts, setAlerts] = useState(initial.alerts);
   const [data, setData] = useState<BarsResponse | null>(null);
   const [loadedKey, setLoadedKey] = useState("");
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
+  const [tool, setTool] = useState<Tool>(null);
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [quotes, setQuotes] = useState<Record<string, ReturnType<typeof quoteFromDaily>>>({});
   const [saveState, setSaveState] = useState<"" | "saving" | "saved" | "error">("");
+  const [trades, setTrades] = useState<TradesResponse>(NO_TRADES);
+  const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
+  const [clock, setClock] = useState(0);
+  const [notice, setNotice] = useState("");
   const info = SYMBOLS[symbol];
   const supabase = useMemo(() => (signedIn ? createClient() : null), [signedIn]);
   const ids = useRef({ layout: initial.layoutId, watchlist: initial.watchlistId });
@@ -96,6 +129,34 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     return () => { clearInterval(t); ws.close(); };
   }, [data?.source, info.binance, tf, load]);
 
+  // ---------- copy-trade activity and economic calendar for this symbol ----------
+  useEffect(() => {
+    if (!signedIn) return;
+    let alive = true;
+    const run = () => fetchJson(`/api/trades?symbol=${symbol}&days=14`, NO_TRADES).then((r) => { if (alive) setTrades(r); });
+    run();
+    const t = setInterval(run, 30_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [symbol, signedIn]);
+  useEffect(() => {
+    let alive = true;
+    const run = () => fetchJson<{ events: CalendarEvent[] }>(`/api/calendar?symbol=${symbol}`, { events: [] }).then((r) => { if (alive) setCalendar(r.events); });
+    run();
+    const t = setInterval(run, 10 * 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [symbol]);
+  useEffect(() => {
+    const tick = () => setClock(Date.now());
+    const t = setInterval(tick, 15_000);
+    const first = setTimeout(tick, 0);
+    return () => { clearInterval(t); clearTimeout(first); };
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setTool(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // ---------- watchlist quotes ----------
   useEffect(() => {
     let alive = true;
@@ -120,7 +181,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
-      const state = { symbol, tf, indicators };
+      const state = { symbol, tf, indicators, overlays };
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return setSaveState("error");
       const res = ids.current.layout
@@ -129,7 +190,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       if (!ids.current.layout && res.data && "id" in res.data) ids.current.layout = res.data.id as string;
       setSaveState(res.error ? "error" : "saved");
     }, 800);
-  }, [symbol, tf, indicators, supabase]);
+  }, [symbol, tf, indicators, overlays, supabase]);
 
   const saveWatchlist = async (list: string[]) => {
     setWatchlist(list);
@@ -143,24 +204,61 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     }
   };
 
-  const hlines = drawings[symbol]?.hlines ?? [];
-  const saveLines = async (list: number[]) => {
+  // ---------- drawings: horizontal lines and shapes, one row per symbol ----------
+  const mine = drawings[symbol];
+  const hlinePrices = useMemo(() => mine?.hlines ?? [], [mine]);
+  const shapes = useMemo(() => mine?.shapes ?? [], [mine]);
+  const saveDrawing = async (next: { hlines: number[]; shapes: Shape[] }) => {
     const current = drawings[symbol];
-    setDrawings((d) => ({ ...d, [symbol]: { id: current?.id ?? "", hlines: list } }));
+    setDrawings((d) => ({ ...d, [symbol]: { id: current?.id ?? "", ...next } }));
     if (!supabase) return;
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return;
-    const payload = { data: { hlines: list }, updated_at: new Date().toISOString() };
+    const payload = { data: next, updated_at: new Date().toISOString() };
     if (current?.id) await supabase.from("drawings").update(payload).eq("id", current.id);
     else {
       const { data: row } = await supabase.from("drawings").insert({ user_id: auth.user.id, symbol, ...payload }).select("id").single();
-      if (row) setDrawings((d) => ({ ...d, [symbol]: { id: row.id, hlines: list } }));
+      if (row) setDrawings((d) => ({ ...d, [symbol]: { id: row.id, ...next } }));
     }
   };
   const addLine = (price: number) => {
     const p = Number(price.toFixed(info.digits));
-    void saveLines([...hlines, p].sort((a, b) => b - a));
-    setDrawMode(false);
+    void saveDrawing({ hlines: [...hlinePrices, p].sort((a, b) => b - a), shapes });
+    setTool(null);
+  };
+  const addShape = (s: Shape) => {
+    const round = (x: number) => Number(x.toFixed(info.digits));
+    void saveDrawing({ hlines: hlinePrices, shapes: [...shapes, { ...s, a: { ...s.a, p: round(s.a.p) }, b: { ...s.b, p: round(s.b.p) } }] });
+    setTool(null);
+  };
+
+  // ---------- price alerts on horizontal lines (checked by the server every minute) ----------
+  const alertAt = (price: number) => alerts.find((a) => a.symbol === symbol && Math.abs(a.price - price) < 1e-9);
+  const removeLine = async (price: number) => {
+    const a = alertAt(price);
+    if (a && supabase) { await supabase.from("alerts").delete().eq("id", a.id); setAlerts((xs) => xs.filter((x) => x.id !== a.id)); }
+    void saveDrawing({ hlines: hlinePrices.filter((x) => x !== price), shapes });
+  };
+  const toggleAlert = async (price: number) => {
+    if (!supabase) return setNotice("Đăng nhập để đặt cảnh báo.");
+    const a = alertAt(price);
+    if (a) {
+      await supabase.from("alerts").delete().eq("id", a.id);
+      setAlerts((xs) => xs.filter((x) => x.id !== a.id));
+      return setNotice("");
+    }
+    const cur = data?.bars[data.bars.length - 1]?.close;
+    if (!cur) return;
+    const op = price >= cur ? "above" : "below";
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) return;
+    const { data: row, error } = await supabase.from("alerts").insert({
+      user_id: auth.user.id, symbol, name: `Đường giá ${fmt(price, info.digits)}`,
+      rule: { kind: "price", op, price }, last_price: cur, channels: ["web", "telegram"],
+    }).select("id").single();
+    if (error || !row) return setNotice(`Không đặt được cảnh báo: ${error?.message ?? ""}`);
+    setAlerts((xs) => [...xs, { id: row.id, symbol, price, op }]);
+    setNotice(`🔔 Sẽ báo khi ${symbol} ${op === "above" ? "vượt lên" : "xuống dưới"} ${fmt(price, info.digits)} (kiểm tra mỗi phút, báo một lần).`);
   };
 
   // ---------- indicators ----------
@@ -171,12 +269,38 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const setParam = (u: string, key: string, value: unknown) =>
     setIndicators((xs) => xs.map((x) => (x.uid === u ? { ...x, params: { ...x.params, [key]: value } } : x)));
 
+  // ---------- what the chart draws ----------
+  const hlines = useMemo(() => hlinePrices.map((price) => ({
+    price, alert: alerts.some((a) => a.symbol === symbol && Math.abs(a.price - price) < 1e-9),
+  })), [hlinePrices, alerts, symbol]);
+  const tradeMarkers = useMemo<TimedMarker[]>(() => !overlays.trades ? [] : trades.trades.flatMap((t): TimedMarker[] => {
+    if (t.kind === "open") {
+      const c = t.copied;
+      const copy = c ? ` · copy ${c.done}/${c.total}${c.latencyMs != null ? ` ${c.latencyMs}ms` : ""}${c.failed ? ` ✗${c.failed}` : ""}` : "";
+      const buy = t.side === "BUY";
+      return [{ time: t.time, position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown",
+        color: c?.failed ? COLORS.down : buy ? COLORS.up : COLORS.down, text: `${t.side} ${t.volume ?? ""}${copy}` }];
+    }
+    if (t.kind === "close") return [{ time: t.time, position: "aboveBar", shape: "circle", color: COLORS.muted, text: `Đóng #${t.ticket}` }];
+    if (t.kind === "partial") return [{ time: t.time, position: "aboveBar", shape: "circle", color: COLORS.muted, text: `Đóng ${t.volume} #${t.ticket}` }];
+    return [{ time: t.time, position: "inBar", shape: "square", color: COLORS.accent, text: "SL/TP" }];
+  }), [trades.trades, overlays.trades]);
+  const tradeLines = useMemo<PriceLineSpec[]>(() => !overlays.trades ? [] : trades.positions.flatMap((p) => [
+    { price: p.price, color: p.side === "BUY" ? COLORS.up : COLORS.down, title: `${p.master} ${p.side} ${p.volume}`, dashed: true },
+    ...(p.sl ? [{ price: p.sl, color: COLORS.down, title: `SL #${p.ticket}` }] : []),
+    ...(p.tp ? [{ price: p.tp, color: COLORS.up, title: `TP #${p.ticket}` }] : []),
+  ]), [trades.positions, overlays.trades]);
+  const events = useMemo<ChartEvent[]>(() => !overlays.events ? [] : calendar.map((e) => ({ time: e.time, title: e.title, country: e.country, impact: e.impact })), [calendar, overlays.events]);
+  const nextHigh = clock ? calendar.find((e) => e.impact === "high" && e.time * 1000 > clock) : undefined;
+  const recent = clock ? calendar.filter((e) => e.time * 1000 <= clock && e.time * 1000 > clock - 6 * 3600_000 && e.impact === "high") : [];
+
   const bars = data?.bars ?? [];
   const last = bars[bars.length - 1];
   const prev = bars[bars.length - 2];
   const chg = last && prev ? ((last.close - prev.close) / prev.close) * 100 : null;
   const filtered = MENU.filter((d) => !query || d.name.toLowerCase().includes(query.toLowerCase()) || d.id.includes(query.toLowerCase()));
   const notInList = Object.keys(SYMBOLS).filter((s) => !watchlist.includes(s));
+  const activeTool = TOOLS.find((t) => t.id === tool);
 
   return (
     <div className="-m-4 flex min-h-[calc(100vh-7rem)] flex-col lg:-m-6 lg:flex-row">
@@ -197,7 +321,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             const active = s === symbol;
             return (
               <li key={s} className="group relative shrink-0">
-                <button onClick={() => setSymbol(s)}
+                <button onClick={() => { setSymbol(s); setTool(null); }}
                   className={`flex w-44 items-center justify-between gap-2 px-3 py-2 text-left text-sm lg:w-full ${active ? "bg-accent/15" : "hover:bg-panel-2"}`}>
                   <span>
                     <span className="block font-medium">{s}</span>
@@ -260,18 +384,39 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </div>
             )}
           </div>
-          <button onClick={() => setDrawMode((d) => !d)} title="Bấm rồi click lên biểu đồ để đặt đường giá ngang"
-            className={`rounded-md border px-2 py-1 text-xs ${drawMode ? "border-warn bg-warn/15 text-warn" : "border-border hover:bg-panel-2"}`}>
-            ― Đường giá{drawMode ? ": click lên biểu đồ" : ""}
-          </button>
+          <div className="flex rounded-md border border-border" role="group" aria-label="Công cụ vẽ">
+            {TOOLS.map((t) => (
+              <button key={t.id} onClick={() => setTool((x) => (x === t.id ? null : t.id))} title={`${t.label}: ${t.hint}`}
+                className={`px-2 py-1 text-xs ${tool === t.id ? "bg-warn/20 text-warn" : "text-muted hover:text-foreground"}`}>{t.icon}</button>
+            ))}
+          </div>
+          <div className="flex rounded-md border border-border text-xs">
+            {signedIn && (
+              <button onClick={() => setOverlays((o) => ({ ...o, trades: !o.trades }))} title="Lệnh của Master và kết quả copy"
+                className={`px-2 py-1 ${overlays.trades ? "text-foreground" : "text-muted line-through"}`}>⇅ Lệnh copy</button>
+            )}
+            <button onClick={() => setOverlays((o) => ({ ...o, events: !o.events }))} title="Tin kinh tế ảnh hưởng mạnh/trung bình"
+              className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
+          </div>
+          {nextHigh && clock > 0 && (
+            <span className={`rounded border px-1.5 py-0.5 text-xs ${nextHigh.time * 1000 - clock < 3600_000 ? "border-down/50 text-down" : "border-border text-muted"}`}
+              title={`Dự báo ${nextHigh.forecast ?? "—"} · Trước ${nextHigh.previous ?? "—"}`}>
+              ⏱ {nextHigh.country} {nextHigh.title} · còn {countdown(nextHigh.time * 1000 - clock)}
+            </span>
+          )}
           <span className="ml-auto text-xs text-muted">
             {!signedIn ? "Đăng nhập để lưu layout" : saveState === "saving" ? "Đang lưu…" : saveState === "saved" ? "Đã lưu" : saveState === "error" ? "Lưu lỗi" : ""}
           </span>
         </div>
 
-        {/* active indicators and lines */}
-        {(indicators.length > 0 || hlines.length > 0) && (
+        {/* active indicators, drawings, alerts */}
+        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0) && (
           <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
+            {activeTool && (
+              <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
+                {activeTool.label}: {activeTool.hint} · Esc để huỷ
+              </span>
+            )}
             {indicators.map((ind) => {
               const def = BY_ID[ind.id];
               const editable = (def?.inputs ?? []).filter((i) => ["int", "float", "select", "source"].includes(i.type));
@@ -303,18 +448,33 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                 </span>
               );
             })}
-            {hlines.map((p) => (
-              <span key={p} className="inline-flex items-center gap-1 rounded border border-warn/40 px-1.5 py-0.5 text-warn">
-                ― {fmt(p, info.digits)}
-                <button onClick={() => saveLines(hlines.filter((x) => x !== p))} className="hover:text-down" title="Xoá đường">×</button>
+            {hlines.map((h) => (
+              <span key={h.price} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${h.alert ? "border-accent/50 text-accent" : "border-warn/40 text-warn"}`}>
+                ― {fmt(h.price, info.digits)}
+                <button onClick={() => toggleAlert(h.price)} title={h.alert ? "Tắt cảnh báo" : "Báo khi giá chạm đường này"}
+                  className={h.alert ? "" : "opacity-50 hover:opacity-100"}>🔔</button>
+                <button onClick={() => removeLine(h.price)} className="hover:text-down" title="Xoá đường">×</button>
               </span>
             ))}
+            {shapes.map((s) => (
+              <span key={s.id} className="inline-flex items-center gap-1 rounded border border-accent/40 px-1.5 py-0.5 text-accent">
+                {TOOLS.find((t) => t.id === s.kind)?.icon} {SHAPE_LABEL[s.kind as ShapeKind]}
+                <button onClick={() => saveDrawing({ hlines: hlinePrices, shapes: shapes.filter((x) => x.id !== s.id) })} className="hover:text-down" title="Xoá">×</button>
+              </span>
+            ))}
+            {recent.map((e) => (
+              <span key={`${e.country}${e.title}${e.time}`} className="rounded border border-down/40 px-1.5 py-0.5 text-down" title="Tin mạnh trong 6 giờ qua">
+                📰 {e.country} {e.title}: thực tế {e.actual ?? "—"} / dự báo {e.forecast ?? "—"}
+              </span>
+            ))}
+            {notice && <span className="text-muted">{notice}</span>}
           </div>
         )}
 
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
-          <PriceChart bars={bars} digits={info.digits} indicators={indicators} hlines={hlines} drawMode={drawMode}
-            onAddLine={addLine} viewKey={key} />
+          <PriceChart bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
+            hlines={hlines} shapes={shapes} events={events} tradeMarkers={tradeMarkers} tradeLines={tradeLines}
+            tool={tool} onAddLine={addLine} onAddShape={addShape} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (
             <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>
@@ -330,6 +490,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           {data?.source && <span>Nguồn: {data.source}</span>}
           {updatedAt && <span>Cập nhật {new Date(updatedAt).toLocaleTimeString("vi-VN")}</span>}
           {data?.note && <span className="text-warn">{data.note}</span>}
+          {overlays.trades && signedIn && (trades.trades.length > 0 || trades.positions.length > 0) && (
+            <span>Lệnh copy 14 ngày: {trades.trades.filter((t) => t.kind === "open").length} lệnh mở · {trades.positions.length} vị thế đang mở</span>
+          )}
           {info.broker && !data?.source.startsWith("Giá broker") && <span>Khi EA master gửi nến M1, biểu đồ chuyển sang giá broker.</span>}
         </div>
       </section>

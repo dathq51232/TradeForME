@@ -53,3 +53,11 @@ jobs:
         run: supabase functions deploy --remote="$SUPABASE_PROJECT_ID" --use-api --yes
       - name: Smoke test
         run: curl -fsS "https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/health"
+      # pg_cron calls market-cron (price alerts, calendar) every minute. The URL holds the project ref, which
+      # a migration cannot know, so it is set here through the Management API (idempotent).
+      - name: Schedule market-cron
+        run: |
+          url="https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/market-cron"
+          curl -fsS -X POST "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_ID}/database/query" \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" -H "Content-Type: application/json" \
+            -d "{\"query\": \"select public.schedule_market_cron('${url}') as result\"}"

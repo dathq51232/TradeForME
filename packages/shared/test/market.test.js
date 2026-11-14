@@ -41,3 +41,11 @@ test("broker rows, dedupe and daily quote", () => {
   assert.equal(Number(q.changePct.toFixed(2)), 2);
   assert.equal(quoteFromDaily([]), null);
 });
+
+test("broker symbols map to chart symbols", async () => {
+  const { chartSymbol, tfSeconds } = await import("../src/market.js");
+  const cases = { XAUUSDm: "XAUUSD", "GOLD.pro": "XAUUSD", "#USOIL": "WTI", "XTIUSD.cash": "WTI", UKOIL: "BRENT", BTCUSDT: "BTCUSD",
+    "ETHUSD.r": "ETHUSD", USDX: "DXY", XAGUSD: "XAGUSD", EURUSD: null, XAUUSDJPYXX: null, "": null };
+  for (const [broker, id] of Object.entries(cases)) assert.equal(chartSymbol(broker), id, broker);
+  assert.equal(tfSeconds("4h"), 14400);
+});

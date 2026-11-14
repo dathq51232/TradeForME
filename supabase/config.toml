@@ -444,3 +444,6 @@ verify_jwt = false
 
 [functions.ct-bars]
 verify_jwt = false
+
+[functions.market-cron]
+verify_jwt = false

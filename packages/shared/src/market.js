@@ -84,3 +84,24 @@ export function quoteFromDaily(bars) {
   const prev = bars.length > 1 ? bars[bars.length - 2].close : last.open;
   return { price: last.close, change: last.close - prev, changePct: prev ? ((last.close - prev) / prev) * 100 : 0, time: last.time };
 }
+
+// ---------- broker symbols -> chart symbols ----------
+// Brokers name the same market differently (XAUUSDm, GOLD.pro, #USOIL, XTIUSD.cash). Longest alias first,
+// and only a short suffix may follow it, so "BTCUSDT" and "XTIUSD.cash" map but a longer name such as "XAUUSDJPYXX" does not.
+const ALIASES = [
+  ["XAUUSD", "XAUUSD"], ["GOLD", "XAUUSD"], ["XAGUSD", "XAGUSD"], ["SILVER", "XAGUSD"],
+  ["XTIUSD", "WTI"], ["USOIL", "WTI"], ["WTICRUDE", "WTI"], ["CRUDEOIL", "WTI"], ["WTI", "WTI"],
+  ["XBRUSD", "BRENT"], ["UKOIL", "BRENT"], ["BRENT", "BRENT"],
+  ["BTCUSD", "BTCUSD"], ["XBTUSD", "BTCUSD"], ["ETHUSD", "ETHUSD"],
+  ["USDX", "DXY"], ["DXY", "DXY"], ["USDINDEX", "DXY"],
+].sort((a, b) => b[0].length - a[0].length);
+
+/** Chart symbol for a broker symbol, or null when it is not one of the charted markets. */
+export function chartSymbol(brokerSymbol) {
+  const s = String(brokerSymbol ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  for (const [alias, id] of ALIASES) if (s.startsWith(alias) && s.length - alias.length <= 4) return id;
+  return null;
+}
+
+/** Bar length in seconds for a timeframe id. */
+export const tfSeconds = (tf) => ({ "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800 })[tf] ?? 3600;

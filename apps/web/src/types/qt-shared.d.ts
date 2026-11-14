@@ -27,6 +27,8 @@ declare module "@qt/shared/market" {
   export function parseYahoo(j: unknown, daily: boolean): Bar[];
   export function parseBrokerRows(rows: { ts: string; o: number | string; h: number | string; l: number | string; c: number | string; v: number | string }[]): Bar[];
   export function quoteFromDaily(bars: Bar[]): { price: number; change: number; changePct: number; time: number } | null;
+  export function chartSymbol(brokerSymbol: unknown): string | null;
+  export function tfSeconds(tf: string): number;
 }
 
 declare module "@qt/core/series" {

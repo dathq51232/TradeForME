@@ -2,12 +2,13 @@ import { Suspense } from "react";
 import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
-import { ChartTerminal, type LayoutState } from "./terminal";
+import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
+import type { Shape } from "./chart-overlay";
 
-export default function ChartsPage() {
+export default function ChartsPage(props: PageProps<"/charts">) {
   return (
     <Suspense fallback={<p className="text-sm text-muted">Đang tải biểu đồ…</p>}>
-      <Charts />
+      <Charts searchParams={props.searchParams} />
     </Suspense>
   );
 }
@@ -15,7 +16,11 @@ export default function ChartsPage() {
 const DEFAULT_LAYOUT: LayoutState = {
   symbol: "XAUUSD", tf: "1h",
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
+  overlays: { trades: true, events: true },
 };
+const KINDS = new Set(["trend", "ray", "rect", "fib"]);
+const isPt = (p: unknown): p is { t: number; p: number } =>
+  !!p && typeof (p as { t: unknown }).t === "number" && typeof (p as { p: unknown }).p === "number";
 
 /** Accept only what this version understands, so an old or edited layout never breaks the page. */
 function cleanLayout(raw: unknown): LayoutState {
@@ -26,34 +31,53 @@ function cleanLayout(raw: unknown): LayoutState {
     indicators: Array.isArray(s.indicators)
       ? s.indicators.filter((i) => i && BY_ID[i.id]).slice(0, 12).map((i) => ({ uid: String(i.uid), id: i.id, params: i.params ?? {} }))
       : DEFAULT_LAYOUT.indicators,
+    overlays: { trades: s.overlays?.trades !== false, events: s.overlays?.events !== false },
   };
 }
 
-// Market data is public: anyone can view charts; layouts, watchlists and lines are saved only when signed in.
-async function Charts() {
+function cleanDrawing(id: string, data: unknown): SymbolDrawings {
+  const d = (data ?? {}) as { hlines?: unknown; shapes?: unknown };
+  const hlines = Array.isArray(d.hlines) ? d.hlines.filter((x): x is number => typeof x === "number") : [];
+  const shapes = Array.isArray(d.shapes)
+    ? (d.shapes as Shape[]).filter((s) => s && KINDS.has(s.kind) && isPt(s.a) && isPt(s.b)).slice(0, 100)
+        .map((s) => ({ id: String(s.id), kind: s.kind, a: s.a, b: s.b }))
+    : [];
+  return { id, hlines, shapes };
+}
+
+// Market data is public: anyone can view charts; layouts, watchlists, drawings and alerts are saved only when signed in.
+async function Charts({ searchParams }: { searchParams: PageProps<"/charts">["searchParams"] }) {
+  const sp = await searchParams;
+  const want = typeof sp.symbol === "string" && SYMBOLS[sp.symbol.toUpperCase()] ? sp.symbol.toUpperCase() : null;
   const supabase = await createClient();
   const { data: claims } = await supabase.auth.getClaims();
   if (!claims?.claims?.sub) {
-    return <ChartTerminal signedIn={false} initial={{ layout: DEFAULT_LAYOUT, layoutId: null, watchlist: DEFAULT_WATCHLIST, watchlistId: null, drawings: {} }} />;
+    const layout = want ? { ...DEFAULT_LAYOUT, symbol: want } : DEFAULT_LAYOUT;
+    return <ChartTerminal signedIn={false} initial={{ layout, layoutId: null, watchlist: DEFAULT_WATCHLIST, watchlistId: null, drawings: {}, alerts: [] }} />;
   }
-  const [{ data: layout }, { data: watchlist }, { data: drawings }] = await Promise.all([
+  const [{ data: layout }, { data: watchlist }, { data: drawings }, { data: alerts }] = await Promise.all([
     supabase.from("layouts").select("id, state").eq("name", "default").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("watchlists").select("id, symbols").order("created_at").limit(1).maybeSingle(),
     supabase.from("drawings").select("id, symbol, data"),
+    supabase.from("alerts").select("id, symbol, rule").eq("active", true).not("symbol", "is", null),
   ]);
   const symbols = (watchlist?.symbols ?? []).filter((s: string) => SYMBOLS[s]);
-  const lines: Record<string, { id: string; hlines: number[] }> = {};
-  for (const d of drawings ?? []) {
-    const h = (d.data as { hlines?: unknown })?.hlines;
-    lines[d.symbol] = { id: d.id, hlines: Array.isArray(h) ? h.filter((x): x is number => typeof x === "number") : [] };
-  }
+  const bySymbol: Record<string, SymbolDrawings> = {};
+  for (const d of drawings ?? []) bySymbol[d.symbol] = cleanDrawing(d.id, d.data);
+  const clean = layout ? cleanLayout(layout.state) : DEFAULT_LAYOUT;
+  const priceAlerts: PriceAlert[] = (alerts ?? []).flatMap((a) => {
+    const r = a.rule as { kind?: string; op?: string; price?: unknown };
+    return r?.kind === "price" && typeof r.price === "number" && (r.op === "above" || r.op === "below")
+      ? [{ id: a.id, symbol: a.symbol as string, price: r.price, op: r.op }] : [];
+  });
   return (
     <ChartTerminal signedIn initial={{
-      layout: layout ? cleanLayout(layout.state) : DEFAULT_LAYOUT,
+      layout: want ? { ...clean, symbol: want } : clean,
       layoutId: layout?.id ?? null,
       watchlist: symbols.length ? symbols : DEFAULT_WATCHLIST,
       watchlistId: watchlist?.id ?? null,
-      drawings: lines,
+      drawings: bySymbol,
+      alerts: priceAlerts,
     }} />
   );
 }

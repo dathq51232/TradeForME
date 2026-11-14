@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui";
 import { createClient } from "@/lib/supabase/server";
 import { requestTime } from "@/lib/auth";
 import { connection } from "@/lib/format";
+import { NotificationsBell } from "@/components/notifications";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -37,7 +38,7 @@ async function TopBar() {
   const userId = data?.claims?.sub;
   if (!userId) return null;
   const [{ data: profile }, { data: accounts }, { count: unread }] = await Promise.all([
-    supabase.from("profiles").select("full_name, role").eq("id", userId).maybeSingle(),
+    supabase.from("profiles").select("full_name, role, telegram_chat_id").eq("id", userId).maybeSingle(),
     supabase.from("mt5_accounts").select("status, last_heartbeat_at, disabled, terminal_connected, trade_allowed"),
     supabase.from("notifications").select("id", { count: "exact", head: true }).is("read_at", null),
   ]);
@@ -49,7 +50,7 @@ async function TopBar() {
       <Badge tone={total === 0 ? "muted" : online === total ? "up" : online === 0 ? "down" : "warn"}>
         MT5 {online}/{total} online
       </Badge>
-      <span className="text-xs text-muted" title="Thông báo chưa đọc">🔔 {unread ?? 0}</span>
+      <NotificationsBell unread={unread ?? 0} telegram={profile?.telegram_chat_id ?? null} />
       <span className="text-sm">{profile?.full_name ?? "bạn"}</span>
       {profile?.role && profile.role !== "user" && <Badge tone="accent">{profile.role}</Badge>}
       <form action="/auth/signout" method="post">
