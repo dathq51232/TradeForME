@@ -82,8 +82,10 @@ export async function setDisabled(form: FormData) {
 export async function deleteAccount(form: FormData) {
   const { supabase } = await requireUser("/accounts");
   const label = String(form.get("label") ?? "");
-  if (String(form.get("confirm") ?? "") !== label) {
-    redirect(withMsg("/accounts", "error", `Gõ đúng tên "${label}" để xoá.`));
+  // Forgiving about what phone keyboards add: extra spaces, capitals, composed vs decomposed accents.
+  const norm = (s: string) => s.normalize("NFC").trim().replace(/\s+/g, " ").toLocaleLowerCase("vi");
+  if (!label || norm(String(form.get("confirm") ?? "")) !== norm(label)) {
+    redirect(withMsg("/accounts", "error", `Gõ tên "${label}" vào ô cạnh nút Xoá của đúng dòng đó để xác nhận.`));
   }
   const { error } = await supabase.from("mt5_accounts").delete().eq("id", String(form.get("id")));
   revalidatePath("/accounts");

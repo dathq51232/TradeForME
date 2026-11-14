@@ -94,6 +94,14 @@ test("heartbeat fills login/server once, then refuses another account, the wrong
   const taken = (await asUser(BOB, "select * from public.create_mt5_account('receiver', 'Dup', null, null)")).rows[0] as Record<string, string>;
   const dup = await call((r) => heartbeat(r, db), await signed("/hb", { id: taken.account_id, token: taken.ea_token, secret: taken.hmac_secret }, hb));
   assert.deepEqual([dup.status, dup.body.error], [409, "ACCOUNT_IN_USE"]);
+  // same owner: the message names the entry that holds the account, by name, role and short ID
+  assert.match(String(dup.body.message), new RegExp(`"Auto" \\(Receiver, ID ${auto.id.slice(0, 8)}…\\)`));
+  // another owner's entry is not named
+  const stranger = (await asUser(ALICE, "select * from public.create_mt5_account('receiver', 'Other', null, null)")).rows[0] as Record<string, string>;
+  const foreign = await call((r) => heartbeat(r, db), await signed("/hb", { id: stranger.account_id, token: stranger.ea_token, secret: stranger.hmac_secret }, hb));
+  assert.equal(foreign.body.error, "ACCOUNT_IN_USE");
+  assert.match(String(foreign.body.message), /người dùng khác/);
+  assert.doesNotMatch(String(foreign.body.message), /Auto/);
 
   const skew = await call((r) => heartbeat(r, db), await signed("/hb", auto, hb, { ts: Date.now() + 300_000 }));
   assert.deepEqual([skew.status, skew.body.error], [401, "CLOCK_SKEW"]);

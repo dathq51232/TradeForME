@@ -76,7 +76,8 @@ async function Accounts({ searchParams }: { searchParams: PageProps<"/accounts">
                           <form action={deleteAccount} className="mt-1 flex justify-end gap-1">
                             <input type="hidden" name="id" value={a.id} />
                             <input type="hidden" name="label" value={a.label} />
-                            <input name="confirm" placeholder="gõ tên để xoá" className="w-28" required />
+                            <input name="confirm" placeholder={`gõ: ${a.label}`} title={`Xoá mục "${a.label}" (ID ${a.id.slice(0, 8)}…)`}
+                              autoCapitalize="off" autoCorrect="off" autoComplete="off" spellCheck={false} className="w-28" required />
                             <button className="text-down">OK</button>
                           </form>
                         </details>
