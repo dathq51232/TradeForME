@@ -244,6 +244,11 @@ const REF = {
     const r = RSI(C, 14);
     return { value: r, ma: SMA(r, 14) };
   },
+  // the same RSI and MA; its trendlines, divergence and volume marks are checked in rsi-tools.test.js
+  rsiTools: () => {
+    const r = RSI(C, 14);
+    return { value: r, ma: SMA(r, 14) };
+  },
   stoch: () => {
     const hh = HIGHEST(H, 14),
       ll = LOWEST(L, 14);

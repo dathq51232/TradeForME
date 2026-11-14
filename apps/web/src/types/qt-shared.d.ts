@@ -72,7 +72,12 @@ declare module "@qt/core/patterns" {
 
 declare module "@qt/core/indicators" {
   export type IndicatorInput = { key: string; label: string; type: string; default: unknown; min?: number; max?: number; options?: string[] };
-  export type IndicatorOutput = { key: string; label: string; kind: "line" | "histogram"; color: string; dots?: boolean; lineWidth?: number };
+  export type IndicatorOutput = {
+    key: string; label: string; kind: "line" | "histogram"; color: string; dots?: boolean; lineWidth?: number;
+    /** 0 solid, 1 dotted, 2 dashed */ lineStyle?: number;
+    /** no axis label or title, and no series at all when it has no values (trendline slots) */ quiet?: boolean;
+    /** draw on the price pane although the indicator has its own pane */ pane?: "price";
+  };
   export type IndicatorDef = {
     id: string; name: string; group?: string; overlay: boolean; levels?: number[];
     inputs?: IndicatorInput[]; outputs?: IndicatorOutput[];
@@ -81,5 +86,5 @@ declare module "@qt/core/indicators" {
   export const INDICATORS: IndicatorDef[];
   export const BY_ID: Record<string, IndicatorDef>;
   export function defaults(id: string): Record<string, unknown>;
-  export function compute(id: string, bars: Bar[], params?: Record<string, unknown>): Record<string, unknown> & { markers?: Marker[] };
+  export function compute(id: string, bars: Bar[], params?: Record<string, unknown>): Record<string, unknown> & { markers?: Marker[]; priceMarkers?: Marker[] };
 }

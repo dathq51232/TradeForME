@@ -3,6 +3,8 @@
 // TradingView's built-ins: RMA-based RSI/ATR/ADX, SMA-seeded EMA, population stdev.
 // Every series is a plain array the same length as the bars; missing values are NaN.
 
+import { DIVERGENCE_NAMES, divergences, layoutSegments, oscTrendlines, volumeSpikes } from "./rsi-tools.js";
+
 const N = NaN;
 const isNum = (v) => typeof v === "number" && !Number.isNaN(v);
 
@@ -1140,6 +1142,87 @@ export const INDICATORS = [
         value,
         ma: p.maLength > 0 ? sma(value, p.maLength) : value.map(() => N),
       };
+    },
+  },
+  // RSI with what a trader draws on it: trendlines on its highs and lows (and when RSI breaks one), divergence
+  // between price and RSI (hội tụ / phân kỳ, regular and hidden; lines on both RSI and price), and volume spikes
+  // marked on the price. See rsi-tools.js.
+  {
+    id: "rsiTools",
+    name: "RSI: trendline, hội tụ / phân kỳ, volume đột biến",
+    group: "Momentum",
+    overlay: false,
+    inputs: [
+      len(14, "RSI length"),
+      src,
+      { key: "maLength", label: "RSI MA (SMA, 0 = off)", type: "int", default: 14, min: 0 },
+      { key: "depth", label: "Trendline: pivot strength (bars each side)", type: "int", default: 3, min: 1, max: 10 },
+      { key: "tol", label: "Trendline: touch tolerance (RSI points)", type: "float", default: 1.5, min: 0.1 },
+      { key: "divLeft", label: "Divergence: pivot bars left", type: "int", default: 5, min: 1 },
+      { key: "divRight", label: "Divergence: pivot bars right", type: "int", default: 5, min: 1 },
+      { key: "hidden", label: "Hidden divergence", type: "select", options: ["On", "Off"], default: "On" },
+      { key: "volLength", label: "Volume: average of last bars", type: "int", default: 20, min: 2 },
+      { key: "volMult", label: "Volume: spike at × average", type: "float", default: 2.5, min: 1 },
+    ],
+    outputs: [
+      line("value", "RSI", "#7e57c2"),
+      line("ma", "RSI-based MA", "#f7c600", { lineWidth: 1 }),
+      ...[1, 2, 3, 4].map((k) => line(`res${k}`, `Kháng cự RSI ${k}`, "#ef5350", { lineWidth: 2, quiet: true })),
+      ...[1, 2, 3, 4].map((k) => line(`sup${k}`, `Hỗ trợ RSI ${k}`, "#26a69a", { lineWidth: 2, quiet: true })),
+      ...[1, 2].map((k) => line(`bullR${k}`, `Hội tụ (RSI) ${k}`, "#22c55e", { lineWidth: 2, quiet: true, lineStyle: 2 })),
+      ...[1, 2].map((k) => line(`bearR${k}`, `Phân kỳ (RSI) ${k}`, "#f43f5e", { lineWidth: 2, quiet: true, lineStyle: 2 })),
+      ...[1, 2].map((k) => line(`bullP${k}`, `Hội tụ (giá) ${k}`, "#22c55e", { lineWidth: 2, quiet: true, lineStyle: 2, pane: "price" })),
+      ...[1, 2].map((k) => line(`bearP${k}`, `Phân kỳ (giá) ${k}`, "#f43f5e", { lineWidth: 2, quiet: true, lineStyle: 2, pane: "price" })),
+    ],
+    levels: [30, 50, 70],
+    calc: (bars, p) => {
+      const n = bars.length;
+      const value = rsiOf(source(bars, p.source), p.length);
+      const out = { value, ma: p.maLength > 0 ? sma(value, p.maLength) : value.map(() => N) };
+      const markers = [], priceMarkers = [];
+      const t = (i) => bars[Math.min(i, n - 1)].time;
+
+      // trendlines, and a mark where RSI closes through one
+      const lines = oscTrendlines(value, { depth: p.depth, tol: p.tol });
+      const seg = (l) => ({ i1: l.i1, v1: l.v1, i2: l.end, v2: l.at(l.end) });
+      const res = layoutSegments(lines.filter((l) => l.side === "res").map(seg), n, 4);
+      const sup = layoutSegments(lines.filter((l) => l.side === "sup").map(seg), n, 4);
+      res.forEach((a, k) => (out[`res${k + 1}`] = a));
+      sup.forEach((a, k) => (out[`sup${k + 1}`] = a));
+      for (const l of lines) {
+        if (!l.broken) continue;
+        markers.push(l.side === "res"
+          ? { time: t(l.end), position: "belowBar", shape: "arrowUp", color: "#26a69a", text: "Phá" }
+          : { time: t(l.end), position: "aboveBar", shape: "arrowDown", color: "#ef5350", text: "Thủng" });
+      }
+
+      // divergence: a line on the RSI and one on the price, and the name at the second pivot
+      const divs = divergences(bars, value, { left: p.divLeft, right: p.divRight, hidden: p.hidden !== "Off" });
+      const bull = divs.filter((d) => d.kind === "bull" || d.kind === "hiddenBull");
+      const bear = divs.filter((d) => d.kind === "bear" || d.kind === "hiddenBear");
+      const rSeg = (d) => ({ i1: d.i1, v1: d.r1, i2: d.i2, v2: d.r2 });
+      const pSeg = (d) => ({ i1: d.i1, v1: d.p1, i2: d.i2, v2: d.p2 });
+      layoutSegments(bull.map(rSeg), n, 2).forEach((a, k) => (out[`bullR${k + 1}`] = a));
+      layoutSegments(bear.map(rSeg), n, 2).forEach((a, k) => (out[`bearR${k + 1}`] = a));
+      layoutSegments(bull.map(pSeg), n, 2).forEach((a, k) => (out[`bullP${k + 1}`] = a));
+      layoutSegments(bear.map(pSeg), n, 2).forEach((a, k) => (out[`bearP${k + 1}`] = a));
+      for (const d of divs) {
+        const up = d.kind === "bull" || d.kind === "hiddenBull";
+        const m = { time: t(d.i2), position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown", color: up ? "#22c55e" : "#f43f5e", text: DIVERGENCE_NAMES[d.kind] };
+        markers.push(m);
+        priceMarkers.push(m);
+      }
+
+      // volume coming in: on the price, under an up bar (buying) or over a down bar (selling)
+      for (const v of volumeSpikes(bars, { length: p.volLength, mult: p.volMult })) {
+        priceMarkers.push({
+          time: t(v.i), position: v.up ? "belowBar" : "aboveBar", shape: "circle",
+          color: v.up ? "#22c55e" : "#f43f5e", text: `Vol ×${v.ratio.toFixed(1)}`,
+        });
+      }
+      out.markers = markers.sort((a, b) => a.time - b.time);
+      out.priceMarkers = priceMarkers.sort((a, b) => a.time - b.time);
+      return out;
     },
   },
   {

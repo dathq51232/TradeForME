@@ -83,7 +83,8 @@ test('every built-in indicator runs on real data and returns full-length series'
       assert.ok(Array.isArray(out[o.key]), `${def.id}.${o.key} missing`);
       assert.ok(out[o.key].length >= bars.length, `${def.id}.${o.key} too short`);
       const last = out[o.key].slice(0, bars.length).filter((v) => Number.isFinite(v));
-      assert.ok(last.length > 0, `${def.id}.${o.key} has no values`);
+      // a "quiet" output is a slot for lines that may not be there (rsiTools' third trendline, say)
+      assert.ok(last.length > 0 || o.quiet, `${def.id}.${o.key} has no values`);
     }
   }
   assert.ok(I.INDICATORS.length >= 50, `only ${I.INDICATORS.length} indicators`);

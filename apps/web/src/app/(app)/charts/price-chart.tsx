@@ -2,7 +2,7 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import {
   createChart, createSeriesMarkers, CandlestickSeries, BarSeries, AreaSeries, HistogramSeries, LineSeries, PriceScaleMode,
-  type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType,
+  type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType, type LineStyle,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
 import { ChartOverlay, SHAPE_POINTS, TimeIndex, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
@@ -365,29 +365,50 @@ export function PriceChart(props: Props) {
     const allMarkers: SeriesMarker<Time>[] = [];
     let pane = 0;
     for (const { def, out } of computed) {
-      const target = def.overlay ? 0 : ++pane;
+      const own = def.overlay ? 0 : ++pane;
+      let first: ISeriesApi<"Line"> | null = null;
       for (const o of def.outputs ?? []) {
         const values = out[o.key];
         if (!Array.isArray(values)) continue;
+        // an output may draw on the price pane from an indicator in its own pane (divergence lines on price)
+        const target = o.pane === "price" ? 0 : own;
         const colors = Array.isArray(out.colors) ? (out.colors as string[]) : null;
         if (o.kind === "histogram") {
           const h = c.addSeries(HistogramSeries, { color: o.color, priceLineVisible: false, lastValueVisible: false }, target);
           h.setData(bars.flatMap((b, i) => isNum(values[i]) ? [{ time: b.time as UTCTimestamp, value: values[i] as number, ...(colors?.[i] ? { color: colors[i] } : {}) }] : []));
           extra.current.push(h);
         } else {
-          const l = c.addSeries(LineSeries, {
-            color: o.color, lineWidth: (o.lineWidth ?? 1) as 1 | 2 | 3 | 4, priceLineVisible: false,
-            lastValueVisible: !def.overlay, crosshairMarkerVisible: false, lineVisible: !o.dots,
-            pointMarkersVisible: Boolean(o.dots), title: def.overlay ? "" : o.label,
-          }, target);
-          l.setData(bars.flatMap((b, i) => isNum(values[i]) ? [{ time: b.time as UTCTimestamp, value: values[i] as number }] : [{ time: b.time as UTCTimestamp }]));
-          extra.current.push(l);
-          if (target > 0 && o === def.outputs?.[0]) for (const lv of def.levels ?? []) l.createPriceLine({ price: lv, color: C.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+          const label = target > 0 && !o.quiet;
+          const opts = {
+            color: o.color, lineWidth: (o.lineWidth ?? 1) as 1 | 2 | 3 | 4, lineStyle: (o.lineStyle ?? 0) as LineStyle, priceLineVisible: false,
+            lastValueVisible: label, crosshairMarkerVisible: false, lineVisible: !o.dots,
+            pointMarkersVisible: Boolean(o.dots), title: label ? o.label : "",
+          };
+          // a quiet output holds separate straight segments (trendlines): one series each, since a line series
+          // joins its points across whitespace and would link one segment to the next
+          const runs: { time: UTCTimestamp; value: number }[][] = [];
+          if (o.quiet) {
+            let run: { time: UTCTimestamp; value: number }[] = [];
+            bars.forEach((b, i) => {
+              if (isNum(values[i])) run.push({ time: b.time as UTCTimestamp, value: values[i] as number });
+              else if (run.length) { runs.push(run); run = []; }
+            });
+            if (run.length) runs.push(run);
+          }
+          for (const data of o.quiet ? runs : [null]) {
+            const l = c.addSeries(LineSeries, opts, target);
+            l.setData(data ?? bars.map((b, i) => isNum(values[i]) ? { time: b.time as UTCTimestamp, value: values[i] as number } : { time: b.time as UTCTimestamp }));
+            extra.current.push(l);
+            if (target > 0 && !first) first = l;
+          }
+          if (target > 0 && o === def.outputs?.[0] && first) for (const lv of def.levels ?? []) first.createPriceLine({ price: lv, color: C.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
         }
       }
-      if (Array.isArray(out.markers) && def.overlay) {
-        for (const m of out.markers) allMarkers.push({ ...m, time: m.time as UTCTimestamp } as SeriesMarker<Time>);
-      }
+      const asMarkers = (list: unknown) => (Array.isArray(list) ? (list as { time: number }[]) : []).map((m) => ({ ...m, time: m.time as UTCTimestamp }) as SeriesMarker<Time>);
+      if (def.overlay) allMarkers.push(...asMarkers(out.markers));
+      // an indicator in its own pane marks that pane, and may mark the price too (priceMarkers)
+      else if (first && Array.isArray(out.markers) && out.markers.length) createSeriesMarkers(first, asMarkers(out.markers));
+      allMarkers.push(...asMarkers(out.priceMarkers));
     }
     for (const m of tradeMarkers) {
       const t = index.snap(m.time);
