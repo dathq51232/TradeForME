@@ -4,14 +4,14 @@ import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from 
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
-import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
+import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { candlestickPatterns, chartPatterns, closeLevels, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
 
 export type Overlays = { trades: boolean; events: boolean };
-export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean };
+export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
 export type AutoSettings = { chart: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; depth: number };
 export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
@@ -53,6 +53,12 @@ const RANGES: { label: string; seconds: number | null }[] = [
   { label: "Tất cả", seconds: null },
 ];
 const HISTORY = 50;
+const CANDLE_PRESETS = [
+  { label: "Xanh / Đỏ", up: "#00c087", down: "#f45b69" },
+  { label: "Trắng / Đen", up: "#ffffff", down: "#000000" },
+  { label: "Xanh dương / Cam", up: "#4f8cff", down: "#f5a142" },
+  { label: "Xám / Đen", up: "#9aa4b2", down: "#000000" },
+];
 const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; hint: string }[] = [
   { key: "chart", label: "Mô hình giá", hint: "Tam giác tăng/giảm/cân, tam giác mở rộng (tam giác ngược), nêm, hai đỉnh/hai đáy, vai đầu vai" },
   { key: "candles", label: "Mô hình nến", hint: "Búa, sao băng, nhấn chìm, harami, sao mai/sao hôm, ba chàng lính/ba con quạ, nhíp, marubozu…" },
@@ -124,6 +130,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [view, setView] = useState<ChartView>(initial.layout.view);
   const [auto, setAuto] = useState<AutoSettings>(initial.layout.auto);
   const [autoMenu, setAutoMenu] = useState(false);
+  const [styleMenu, setStyleMenu] = useState(false);
+  const setStyle = (patch: Partial<ChartStyle>) => setView((v) => ({ ...v, style: { ...v.style, ...patch } }));
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState(false);
   const chartApi = useRef<ChartHandle>(null);
@@ -285,6 +293,12 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const removeShape = (id: string) => {
     void saveDrawing({ hlines: hlinePrices, shapes: shapes.filter((x) => x.id !== id) });
     setSelected(null);
+  };
+  /** A drawing was moved or resized on the chart (undo with Ctrl+Z). */
+  const changeShape = (s: Shape) => {
+    const r = (pt: { t: number; p: number }) => ({ t: pt.t, p: Number(pt.p.toFixed(info.digits)) });
+    const next = { ...s, a: r(s.a), b: r(s.b), ...(s.c ? { c: r(s.c) } : {}) };
+    void saveDrawing({ hlines: hlinePrices, shapes: shapes.map((x) => (x.id === s.id ? next : x)) });
   };
   /** Undo the last change to this symbol's drawings. Lines with an armed alert are kept (their alert lives on). */
   const undo = () => {
@@ -564,6 +578,45 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                 className={`px-2 py-1 ${view.scale === m ? "bg-accent/20 text-accent" : "text-muted hover:text-foreground"}`}>{m === "log" ? "Log" : "%"}</button>
             ))}
           </div>
+          <div className="relative">
+            <button onClick={() => setStyleMenu((m) => !m)} title="Màu nến, nền biểu đồ, khối lượng"
+              className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">🎨</button>
+            {styleMenu && (
+              <div className="absolute left-0 z-20 mt-1 grid w-64 max-w-[90vw] gap-2 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+                <div className="text-muted">Màu nến</div>
+                <div className="grid grid-cols-2 gap-1">
+                  {CANDLE_PRESETS.map((p) => {
+                    const on = view.style.up === p.up && view.style.down === p.down;
+                    return (
+                      <button key={p.label} onClick={() => setStyle({ up: p.up, down: p.down })}
+                        className={`flex items-center gap-1.5 rounded border px-1.5 py-1 ${on ? "border-accent text-foreground" : "border-border text-muted hover:text-foreground"}`}>
+                        <span className="h-3 w-2 rounded-sm border border-border" style={{ background: p.up }} />
+                        <span className="h-3 w-2 rounded-sm border border-border" style={{ background: p.down }} />
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1 text-muted">Tăng <input type="color" value={view.style.up} onChange={(e) => setStyle({ up: e.target.value })} className="h-6 w-8 cursor-pointer p-0" /></label>
+                  <label className="flex items-center gap-1 text-muted">Giảm <input type="color" value={view.style.down} onChange={(e) => setStyle({ down: e.target.value })} className="h-6 w-8 cursor-pointer p-0" /></label>
+                </div>
+                <div className="text-muted">Nền biểu đồ</div>
+                <div className="flex rounded border border-border">
+                  {(["dark", "light"] as const).map((bg) => (
+                    <button key={bg} onClick={() => setStyle({ bg })}
+                      className={`flex-1 px-2 py-1 ${view.style.bg === bg ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}>{bg === "dark" ? "Tối" : "Sáng"}</button>
+                  ))}
+                </div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={view.style.volume} onChange={(e) => setStyle({ volume: e.target.checked })} />
+                  <span>Khối lượng ở đáy biểu đồ giá</span>
+                </label>
+                <p className="text-muted/80">Chỉ báo dạng dao động (RSI, MACD…) tự nằm ở vùng riêng bên dưới; kéo đường ngăn cách để đổi chiều cao.</p>
+                <button onClick={() => setStyleMenu(false)} className="rounded bg-accent px-2 py-1 text-white">Xong</button>
+              </div>
+            )}
+          </div>
           <div className="flex rounded-md border border-border text-xs">
             <button onClick={screenshot} title="Tải ảnh biểu đồ (PNG)" className="px-2 py-1 text-muted hover:text-foreground">📷</button>
             <button onClick={fullscreen} title="Toàn màn hình" className="px-2 py-1 text-muted hover:text-foreground">⛶</button>
@@ -699,9 +752,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
 
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
           <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indicators}
-            chartType={view.type} scaleMode={view.scale} magnet={view.magnet}
+            chartType={view.type} scaleMode={view.scale} magnet={view.magnet} style={view.style}
             hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines}
-            tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} viewKey={key} />
+            tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (
             <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>

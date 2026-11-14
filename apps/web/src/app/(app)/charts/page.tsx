@@ -4,6 +4,9 @@ import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
 import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
 import { SHAPE_KINDS, SHAPE_POINTS, type Shape } from "./chart-overlay";
+import { DEFAULT_STYLE } from "./chart-overlay";
+
+const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 export default function ChartsPage(props: PageProps<"/charts">) {
   return (
@@ -17,7 +20,7 @@ const DEFAULT_LAYOUT: LayoutState = {
   symbol: "XAUUSD", tf: "1h",
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
   overlays: { trades: true, events: true },
-  view: { type: "candles", scale: "normal", magnet: false },
+  view: { type: "candles", scale: "normal", magnet: false, style: DEFAULT_STYLE },
   auto: { chart: true, candles: true, levels: true, periods: false, sessions: true, depth: 5 },
 };
 const KINDS = new Set<string>(SHAPE_KINDS);
@@ -40,6 +43,12 @@ function cleanLayout(raw: unknown): LayoutState {
       type: s.view?.type && CHART_TYPES.has(s.view.type) ? s.view.type : DEFAULT_LAYOUT.view.type,
       scale: s.view?.scale && SCALES.has(s.view.scale) ? s.view.scale : DEFAULT_LAYOUT.view.scale,
       magnet: s.view?.magnet === true,
+      style: {
+        up: isHex(s.view?.style?.up) ? s.view.style.up : DEFAULT_STYLE.up,
+        down: isHex(s.view?.style?.down) ? s.view.style.down : DEFAULT_STYLE.down,
+        bg: s.view?.style?.bg === "light" ? "light" : "dark",
+        volume: s.view?.style?.volume === true,
+      },
     },
     auto: {
       chart: typeof s.auto?.chart === "boolean" ? s.auto.chart : DEFAULT_LAYOUT.auto.chart,

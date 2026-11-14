@@ -5,7 +5,7 @@ import {
   type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
-import { ChartOverlay, SHAPE_POINTS, TimeIndex, type AutoDraw, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, SHAPE_POINTS, TimeIndex, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown> };
@@ -25,6 +25,21 @@ export type ChartHandle = {
 };
 
 const C = { bg: "#0b0f17", grid: "#1a2230", text: "#8292a8", border: "#263244", up: "#00c087", down: "#f45b69", line: "#4f8cff" };
+export type { ChartStyle };
+const THEME = {
+  dark: { bg: C.bg, grid: C.grid, text: C.text, border: C.border, edge: "#a9b4c4" },
+  light: { bg: "#ffffff", grid: "#eef1f5", text: "#4a5568", border: "#d5dbe3", edge: "#2d3748" },
+};
+/** Relative luminance (0..1) of a #rrggbb colour. */
+const luminance = (hex: string) => {
+  const n = parseInt(hex.slice(1, 7), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+};
+/** Borders and wicks keep the candle colour unless it would vanish into the background (e.g. black on dark). */
+const edgeFor = (color: string, bg: ChartStyle["bg"]) =>
+  Math.abs(luminance(color) - luminance(THEME[bg].bg)) < 0.2 ? THEME[bg].edge : color;
+const withAlpha = (hex: string, a: number) => `${hex.slice(0, 7)}${Math.round(a * 255).toString(16).padStart(2, "0")}`;
 const SCALE: Record<ScaleMode, PriceScaleMode> = { normal: PriceScaleMode.Normal, log: PriceScaleMode.Logarithmic, percent: PriceScaleMode.Percentage };
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const sid = () => Math.random().toString(36).slice(2, 9);
@@ -65,6 +80,7 @@ type Props = {
   barSeconds: number;
   chartType: ChartType;
   scaleMode: ScaleMode;
+  style: ChartStyle;
   indicators: ActiveIndicator[];
   hlines: HLine[];
   shapes: Shape[];
@@ -80,6 +96,8 @@ type Props = {
   onAddLine: (price: number) => void;
   onAddShape: (shape: Shape) => void;
   onSelect: (id: string | null) => void;
+  /** A drawing was moved or resized by dragging (called once, on release). */
+  onChangeShape: (shape: Shape) => void;
   /** Bumps when the symbol/timeframe changes, so the view refits instead of keeping the old zoom. */
   viewKey: string;
   ref?: Ref<ChartHandle>;
@@ -90,12 +108,13 @@ type Props = {
  * events and copy-trade activity, on Lightweight Charts v5. The library's attribution logo stays on (licence).
  */
 export function PriceChart(props: Props) {
-  const { bars, digits, barSeconds, chartType, scaleMode, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref } = props;
+  const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref } = props;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const main = useRef<ISeriesApi<SeriesType> | null>(null);
   const overlay = useRef<ChartOverlay>(new ChartOverlay());
   const extra = useRef<ISeriesApi<"Line" | "Histogram">[]>([]);
+  const vol = useRef<ISeriesApi<"Histogram"> | null>(null);
   const lines = useRef<IPriceLine[]>([]);
   const posLines = useRef<IPriceLine[]>([]);
   const markers = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
@@ -131,7 +150,8 @@ export function PriceChart(props: Props) {
     if (!host.current) return;
     const c = createChart(host.current, {
       autoSize: true,
-      layout: { background: { color: C.bg }, textColor: C.text, fontFamily: "var(--font-geist-sans), system-ui", panes: { separatorColor: C.border }, attributionLogo: true },
+      // indicator panes are split off by a separator that can be dragged to resize them
+      layout: { background: { color: C.bg }, textColor: C.text, fontFamily: "var(--font-geist-sans), system-ui", panes: { separatorColor: C.border, separatorHoverColor: "rgba(79,140,255,0.45)", enableResize: true }, attributionLogo: true },
       grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
       rightPriceScale: { borderColor: C.border },
       timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 12 },
@@ -199,10 +219,56 @@ export function PriceChart(props: Props) {
       if (pt) o.update({ preview: draft(t, points.current, pt) });
     });
 
+    // Drag a drawing's body to move it, or a handle to resize it. While dragging, the chart's own pan and zoom are
+    // off so the chart stays still. Runs in the capture phase, before the chart sees the press.
+    const el = host.current;
+    let drag: { id: string; part: HandlePart | "body"; start: Pt; orig: Shape; now: Shape | null } | null = null;
+    const local = (e: PointerEvent) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const onDown = (e: PointerEvent) => {
+      const { tool: t, shapes: list, onSelect } = live.current;
+      if (e.button !== 0 || t) return;
+      const { x, y } = local(e);
+      const hit = o.grab(x, y, el.clientWidth);
+      const shape = hit && list.find((s) => s.id === hit.id);
+      const start = shape ? o.toPoint(x, y) : null;
+      if (!hit || !shape || !start) return;
+      drag = { id: hit.id, part: hit.part, start, orig: shape, now: null };
+      c.applyOptions({ handleScroll: false, handleScale: false });
+      onSelect(hit.id);
+    };
+    const onMove = (e: PointerEvent) => {
+      const { x, y } = local(e);
+      if (!drag) {
+        // hint what a press would do: move the shape, or resize it from a handle
+        if (!live.current.tool && x >= 0 && y >= 0 && x <= el.clientWidth && y <= el.clientHeight) {
+          const g = o.grab(x, y, el.clientWidth);
+          el.style.cursor = !g ? "" : g.part === "body" ? "move" : "nwse-resize";
+        }
+        return;
+      }
+      const to = toPt(x, y);
+      if (!to) return;
+      drag.now = o.dragged(drag.orig, drag.part, drag.start, to);
+      const now = drag.now;
+      o.update({ shapes: live.current.shapes.map((s) => (s.id === now.id ? now : s)) });
+    };
+    const onUp = () => {
+      if (!drag) return;
+      c.applyOptions({ handleScroll: true, handleScale: true });
+      if (drag.now) live.current.onChangeShape(drag.now);
+      drag = null;
+    };
+    el.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+
     chart.current = c;
     return () => {
+      el.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
       c.remove();
-      chart.current = null; main.current = null; markers.current = null; extra.current = []; lines.current = []; posLines.current = [];
+      chart.current = null; main.current = null; markers.current = null; extra.current = []; vol.current = null; lines.current = []; posLines.current = [];
     };
   }, []);
 
@@ -231,6 +297,26 @@ export function PriceChart(props: Props) {
     };
   }, [chartType]);
 
+  // colours: background, grid and candles (borders and wicks stay visible even for black-on-dark candles)
+  useEffect(() => {
+    const c = chart.current, s = main.current;
+    if (!c || !s) return;
+    const t = THEME[style.bg];
+    c.applyOptions({
+      layout: { background: { color: t.bg }, textColor: t.text, panes: { separatorColor: t.border } },
+      grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+      rightPriceScale: { borderColor: t.border },
+      timeScale: { borderColor: t.border },
+    });
+    const eu = edgeFor(style.up, style.bg), ed = edgeFor(style.down, style.bg);
+    if (chartType === "candles" || chartType === "heikin" || chartType === "hollow") {
+      s.applyOptions({
+        upColor: chartType === "hollow" ? "rgba(0,0,0,0)" : style.up, downColor: style.down,
+        borderUpColor: eu, borderDownColor: ed, wickUpColor: eu, wickDownColor: ed,
+      });
+    } else if (chartType === "bars") s.applyOptions({ upColor: eu, downColor: ed });
+  }, [style.up, style.down, style.bg, chartType]);
+
   // price format and scale
   useEffect(() => {
     main.current?.applyOptions({ priceFormat: { type: "price", precision: digits, minMove: 1 / 10 ** digits } });
@@ -254,6 +340,24 @@ export function PriceChart(props: Props) {
     s.setData(display.map((b) => (line ? { time: b.time as UTCTimestamp, value: b.close } : { ...b, time: b.time as UTCTimestamp })));
     overlay.current.update({ index });
 
+    // volume bars along the bottom fifth of the price pane, on their own hidden scale
+    if (style.volume) {
+      if (!vol.current) {
+        vol.current = c.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false }, 0);
+        c.priceScale("vol", 0).applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
+      }
+      // a candle colour that would vanish into the background (white on light, black on dark) turns grey here
+      const visible = (color: string) => Math.abs(luminance(color) - luminance(THEME[style.bg].bg)) < 0.2 ? (style.bg === "dark" ? "#6b7280" : "#9aa4b2") : color;
+      const up = withAlpha(visible(style.up), 0.45), down = withAlpha(visible(style.down), 0.45);
+      vol.current.setData(bars.map((b) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? up : down })));
+    } else if (vol.current) {
+      c.removeSeries(vol.current);
+      vol.current = null;
+    }
+    c.priceScale("right", 0).applyOptions({ scaleMargins: { top: 0.1, bottom: style.volume ? 0.22 : 0.08 } });
+
+    // indicator panes are rebuilt on every update; keep the heights the user dragged them to
+    const heights = c.panes().slice(1).map((p) => p.getStretchFactor());
     for (const x of extra.current) c.removeSeries(x);
     extra.current = [];
     while (c.panes().length > 1) c.removePane(c.panes().length - 1);
@@ -289,14 +393,15 @@ export function PriceChart(props: Props) {
       const t = index.snap(m.time);
       if (t != null) allMarkers.push({ ...m, time: t as UTCTimestamp });
     }
-    for (let i = 1; i < c.panes().length; i++) c.panes()[i].setStretchFactor(0.35);
+    // a new indicator pane starts small (a quarter of the price pane)
+    for (let i = 1; i < c.panes().length; i++) c.panes()[i].setStretchFactor(heights[i - 1] ?? 0.25);
     markers.current?.setMarkers(allMarkers.sort((a, b) => (a.time as number) - (b.time as number)));
 
     if (fittedFor.current !== viewKey && bars.length) {
       c.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 12 });
       fittedFor.current = viewKey;
     }
-  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey]);
+  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg]);
 
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);
@@ -338,7 +443,7 @@ export function PriceChart(props: Props) {
     <>
       <div ref={host} className={`absolute inset-0 ${tool ? "cursor-crosshair" : ""}`} />
       {bar && (
-        <div className="pointer-events-none absolute left-2 top-1 z-10 max-w-[calc(100%-5rem)] font-mono text-[11px] leading-4">
+        <div className={`pointer-events-none absolute left-2 top-1 z-10 max-w-[calc(100%-5rem)] font-mono text-[11px] leading-4 ${style.bg === "light" ? "text-slate-800" : ""}`}>
           <div className="flex flex-wrap gap-x-2">
             {chartType === "line" || chartType === "area" ? (
               <span>C <span className={tone}>{fmtNum(bar.close, digits)}</span></span>

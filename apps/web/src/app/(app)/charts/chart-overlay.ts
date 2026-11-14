@@ -32,6 +32,12 @@ const COLOR = {
 type Media = { context: CanvasRenderingContext2D; mediaSize: { width: number; height: number } };
 type Target = { useMediaCoordinateSpace<T>(f: (s: Media) => T): T };
 type XY = { x: number; y: number };
+/** How the price pane looks: candle colours, background, and volume bars along its bottom (saved in the layout). */
+export type ChartStyle = { up: string; down: string; bg: "dark" | "light"; volume: boolean };
+export const DEFAULT_STYLE: ChartStyle = { up: "#00c087", down: "#f45b69", bg: "dark", volume: false };
+
+/** a, b, c: a clicked point; ab / ba: the other two corners of a box (time of one point, price of the other). */
+export type HandlePart = "a" | "b" | "c" | "ab" | "ba";
 
 /** Bar index (fractional) <-> unix time, extrapolating with the bar length outside the loaded bars. */
 export class TimeIndex {
@@ -178,6 +184,48 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       if (hit) return s.id;
     }
     return null;
+  }
+
+  /** Drag handles of a shape on screen: its clicked points, plus the two other corners of a box. */
+  handles(s: Shape): (XY & { part: HandlePart })[] {
+    const a = this.xy(s.a), b = this.xy(s.b), c = s.c ? this.xy(s.c) : null;
+    if (!a || !b) return [];
+    const one = s.kind === "hray" || s.kind === "vline" || s.kind === "text";
+    const out: (XY & { part: HandlePart })[] = [{ ...a, part: "a" }];
+    if (!one) out.push({ ...b, part: "b" });
+    if (c) out.push({ ...c, part: "c" });
+    if (s.kind === "rect" || s.kind === "measure") out.push({ x: a.x, y: b.y, part: "ab" }, { x: b.x, y: a.y, part: "ba" });
+    return out;
+  }
+
+  /**
+   * What the mouse would grab at (x, y): a handle of a shape (the selected shape first) to resize it, or the
+   * shape's body to move it.
+   */
+  grab(x: number, y: number, width: number): { id: string; part: HandlePart | "body" } | null {
+    if (this.hidden) return null;
+    const order = [...this.shapes].sort((p, q) => Number(q.id === this.selected) - Number(p.id === this.selected));
+    for (const s of order) {
+      for (const h of this.handles(s)) if (Math.hypot(h.x - x, h.y - y) <= 7) return { id: s.id, part: h.part };
+    }
+    const id = this.shapeAt(x, y, width);
+    return id ? { id, part: "body" } : null;
+  }
+
+  /**
+   * The shape after dragging `part` from `start` to `to` (both as time/price). The body moves by whole bar steps
+   * in bar-index space, so a shape keeps its width across weekend gaps; a handle moves just that point.
+   */
+  dragged(s: Shape, part: HandlePart | "body", start: Pt, to: Pt): Shape {
+    if (part === "body") {
+      const dl = this.index.logical(to.t) - this.index.logical(start.t), dp = to.p - start.p;
+      const shift = (q: Pt): Pt => ({ t: this.index.time(this.index.logical(q.t) + dl), p: q.p + dp });
+      return { ...s, a: shift(s.a), b: shift(s.b), ...(s.c ? { c: shift(s.c) } : {}) };
+    }
+    if (part === "ab") return { ...s, a: { ...s.a, t: to.t }, b: { ...s.b, p: to.p } };
+    if (part === "ba") return { ...s, b: { ...s.b, t: to.t }, a: { ...s.a, p: to.p } };
+    const one = s.kind === "hray" || s.kind === "vline" || s.kind === "text";
+    return { ...s, [part]: to, ...(one && part === "a" ? { b: to } : {}) };
   }
 
   /** Vertical offset (px) of the channel's parallel line: through c, parallel to a-b. */
@@ -423,8 +471,10 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
         ctx.globalAlpha = 1;
         ctx.setLineDash([]);
         ctx.fillStyle = COLOR.select;
-        for (const h of [a, s.kind === "hray" || s.kind === "vline" || s.kind === "text" ? null : b, c]) {
-          if (h) { ctx.beginPath(); ctx.arc(h.x, h.y, 4, 0, Math.PI * 2); ctx.fill(); }
+        ctx.strokeStyle = "#0b0f17";
+        ctx.lineWidth = 1;
+        for (const h of this.handles(s)) {
+          ctx.beginPath(); ctx.arc(h.x, h.y, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
       }
     }
