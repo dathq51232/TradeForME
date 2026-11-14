@@ -48,6 +48,8 @@ function cleanLayout(raw: unknown): LayoutState {
         down: isHex(s.view?.style?.down) ? s.view.style.down : DEFAULT_STYLE.down,
         bg: s.view?.style?.bg === "light" ? "light" : "dark",
         volume: s.view?.style?.volume === true,
+        bgColor: isHex(s.view?.style?.bgColor) ? s.view.style.bgColor : null,
+        grid: s.view?.style?.grid !== false,
       },
     },
     auto: {

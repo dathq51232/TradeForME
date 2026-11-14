@@ -5,7 +5,7 @@ import {
   type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType, type LineStyle,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
-import { ChartOverlay, SHAPE_POINTS, TimeIndex, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, SHAPE_POINTS, TimeIndex, chartTheme, luminance, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown> };
@@ -26,19 +26,8 @@ export type ChartHandle = {
 
 const C = { bg: "#0b0f17", grid: "#1a2230", text: "#8292a8", border: "#263244", up: "#00c087", down: "#f45b69", line: "#4f8cff" };
 export type { ChartStyle };
-const THEME = {
-  dark: { bg: C.bg, grid: C.grid, text: C.text, border: C.border, edge: "#a9b4c4" },
-  light: { bg: "#ffffff", grid: "#eef1f5", text: "#4a5568", border: "#d5dbe3", edge: "#2d3748" },
-};
-/** Relative luminance (0..1) of a #rrggbb colour. */
-const luminance = (hex: string) => {
-  const n = parseInt(hex.slice(1, 7), 16);
-  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
-  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
-};
 /** Borders and wicks keep the candle colour unless it would vanish into the background (e.g. black on dark). */
-const edgeFor = (color: string, bg: ChartStyle["bg"]) =>
-  Math.abs(luminance(color) - luminance(THEME[bg].bg)) < 0.2 ? THEME[bg].edge : color;
+const edgeFor = (color: string, t: ChartTheme) => (Math.abs(luminance(color) - luminance(t.bg)) < 0.2 ? t.edge : color);
 const withAlpha = (hex: string, a: number) => `${hex.slice(0, 7)}${Math.round(a * 255).toString(16).padStart(2, "0")}`;
 const SCALE: Record<ScaleMode, PriceScaleMode> = { normal: PriceScaleMode.Normal, log: PriceScaleMode.Logarithmic, percent: PriceScaleMode.Percentage };
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -126,6 +115,8 @@ export function PriceChart(props: Props) {
 
   const display = useMemo(() => (chartType === "heikin" ? heikinAshi(bars) : bars), [bars, chartType]);
   const index = useMemo(() => new TimeIndex(bars.map((b) => b.time), barSeconds), [bars, barSeconds]);
+  // background, grid, text and border colours (a template's or a custom background's)
+  const theme = useMemo(() => chartTheme(style), [style]);
   const computed = useMemo(() => indicators.flatMap((ind) => {
     const def = BY_ID[ind.id];
     if (!def || !bars.length) return [];
@@ -301,21 +292,21 @@ export function PriceChart(props: Props) {
   useEffect(() => {
     const c = chart.current, s = main.current;
     if (!c || !s) return;
-    const t = THEME[style.bg];
+    const t = theme;
     c.applyOptions({
       layout: { background: { color: t.bg }, textColor: t.text, panes: { separatorColor: t.border } },
-      grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+      grid: { vertLines: { color: t.grid, visible: t.showGrid }, horzLines: { color: t.grid, visible: t.showGrid } },
       rightPriceScale: { borderColor: t.border },
       timeScale: { borderColor: t.border },
     });
-    const eu = edgeFor(style.up, style.bg), ed = edgeFor(style.down, style.bg);
+    const eu = edgeFor(style.up, t), ed = edgeFor(style.down, t);
     if (chartType === "candles" || chartType === "heikin" || chartType === "hollow") {
       s.applyOptions({
         upColor: chartType === "hollow" ? "rgba(0,0,0,0)" : style.up, downColor: style.down,
         borderUpColor: eu, borderDownColor: ed, wickUpColor: eu, wickDownColor: ed,
       });
     } else if (chartType === "bars") s.applyOptions({ upColor: eu, downColor: ed });
-  }, [style.up, style.down, style.bg, chartType]);
+  }, [style.up, style.down, theme, chartType]);
 
   // price format and scale
   useEffect(() => {
@@ -347,7 +338,7 @@ export function PriceChart(props: Props) {
         c.priceScale("vol", 0).applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
       }
       // a candle colour that would vanish into the background (white on light, black on dark) turns grey here
-      const visible = (color: string) => Math.abs(luminance(color) - luminance(THEME[style.bg].bg)) < 0.2 ? (style.bg === "dark" ? "#6b7280" : "#9aa4b2") : color;
+      const visible = (color: string) => Math.abs(luminance(color) - luminance(theme.bg)) < 0.2 ? (style.bg === "dark" ? "#6b7280" : "#9aa4b2") : color;
       const up = withAlpha(visible(style.up), 0.45), down = withAlpha(visible(style.down), 0.45);
       vol.current.setData(bars.map((b) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? up : down })));
     } else if (vol.current) {
@@ -401,7 +392,7 @@ export function PriceChart(props: Props) {
             extra.current.push(l);
             if (target > 0 && !first) first = l;
           }
-          if (target > 0 && o === def.outputs?.[0] && first) for (const lv of def.levels ?? []) first.createPriceLine({ price: lv, color: C.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
+          if (target > 0 && o === def.outputs?.[0] && first) for (const lv of def.levels ?? []) first.createPriceLine({ price: lv, color: theme.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
         }
       }
       const asMarkers = (list: unknown) => (Array.isArray(list) ? (list as { time: number }[]) : []).map((m) => ({ ...m, time: m.time as UTCTimestamp }) as SeriesMarker<Time>);
@@ -422,7 +413,7 @@ export function PriceChart(props: Props) {
       c.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 12 });
       fittedFor.current = viewKey;
     }
-  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg]);
+  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg, theme]);
 
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);

@@ -32,9 +32,58 @@ const COLOR = {
 type Media = { context: CanvasRenderingContext2D; mediaSize: { width: number; height: number } };
 type Target = { useMediaCoordinateSpace<T>(f: (s: Media) => T): T };
 type XY = { x: number; y: number };
-/** How the price pane looks: candle colours, background, and volume bars along its bottom (saved in the layout). */
-export type ChartStyle = { up: string; down: string; bg: "dark" | "light"; volume: boolean };
-export const DEFAULT_STYLE: ChartStyle = { up: "#00c087", down: "#f45b69", bg: "dark", volume: false };
+/**
+ * How the price pane looks (saved in the layout): candle colours, background, grid, and volume bars along its bottom.
+ * bg is the light/dark family; bgColor, when set, is the exact background (bg then follows its brightness).
+ */
+export type ChartStyle = { up: string; down: string; bg: "dark" | "light"; volume: boolean; bgColor?: string | null; grid?: boolean };
+export const DEFAULT_STYLE: ChartStyle = { up: "#00c087", down: "#f45b69", bg: "dark", volume: false, bgColor: null, grid: true };
+
+/** Relative luminance (0..1) of a #rrggbb colour. */
+export const luminance = (hex: string) => {
+  const n = parseInt(hex.slice(1, 7), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+};
+/** Light or dark family of a background colour. */
+export const bgFamily = (hex: string): ChartStyle["bg"] => (luminance(hex) > 0.35 ? "light" : "dark");
+/** a + (b - a) * t, per channel, for #rrggbb colours. */
+const mix = (a: string, b: string, t: number) => {
+  const x = parseInt(a.slice(1, 7), 16), y = parseInt(b.slice(1, 7), 16);
+  const ch = [16, 8, 0].map((sh) => Math.round(((x >> sh) & 255) + (((y >> sh) & 255) - ((x >> sh) & 255)) * t));
+  return `#${ch.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+};
+export type ChartTheme = { bg: string; grid: string; text: string; border: string; edge: string; showGrid: boolean };
+const BUILT_IN: Record<ChartStyle["bg"], Omit<ChartTheme, "showGrid">> = {
+  dark: { bg: "#0b0f17", grid: "#1a2230", text: "#8292a8", border: "#263244", edge: "#a9b4c4" },
+  light: { bg: "#ffffff", grid: "#eef1f5", text: "#4a5568", border: "#d5dbe3", edge: "#2d3748" },
+};
+/** Background, grid, text and border colours for a style: the built-in pair, or derived from a custom background. */
+export function chartTheme(s: ChartStyle): ChartTheme {
+  const showGrid = s.grid !== false;
+  if (!s.bgColor) return { ...BUILT_IN[s.bg], showGrid };
+  const light = bgFamily(s.bgColor) === "light";
+  const ink = light ? "#1f2937" : "#d1d9e6";
+  return {
+    bg: s.bgColor, grid: mix(s.bgColor, ink, 0.07), text: mix(s.bgColor, ink, 0.62), border: mix(s.bgColor, ink, 0.2),
+    edge: light ? "#2d3748" : "#a9b4c4", showGrid,
+  };
+}
+
+/** Ready-made looks: background, candles and grid together. The calm ones drop the grid and use softer colours. */
+export const CHART_TEMPLATES: { label: string; hint: string; style: Omit<ChartStyle, "volume"> }[] = [
+  { label: "Mặc định", hint: "Nền tối xanh đen, nến xanh/đỏ, có lưới", style: { bg: "dark", bgColor: null, up: "#00c087", down: "#f45b69", grid: true } },
+  { label: "Đen tuyền", hint: "Nền đen hẳn, không lưới, nến dịu: tối nhất, ít rối mắt nhất", style: { bg: "dark", bgColor: "#000000", up: "#26a69a", down: "#ef5350", grid: false } },
+  { label: "Than chì", hint: "Xám than, lưới mờ, nến xanh ngọc/đỏ hồng: dịu mắt khi xem lâu", style: { bg: "dark", bgColor: "#131722", up: "#089981", down: "#f23645", grid: true } },
+  { label: "Đêm xanh", hint: "Xanh navy, không lưới, nến xanh trời/cam: dễ phân biệt tăng giảm", style: { bg: "dark", bgColor: "#0d1b2a", up: "#4fc3f7", down: "#ff8a65", grid: false } },
+  { label: "Đơn sắc tối", hint: "Nền đen, nến xám sáng/xám đậm: chỉ nhìn hình dạng giá", style: { bg: "dark", bgColor: "#0a0a0a", up: "#d4d4d4", down: "#525252", grid: false } },
+  { label: "Sáng tối giản", hint: "Nền trắng, không lưới, nến xanh/đỏ", style: { bg: "light", bgColor: "#ffffff", up: "#089981", down: "#f23645", grid: false } },
+  { label: "Giấy", hint: "Nền kem như giấy in, nến xanh lá/đỏ sẫm: đỡ chói khi dùng ban ngày", style: { bg: "light", bgColor: "#f5f1e8", up: "#2e7d32", down: "#c62828", grid: false } },
+  { label: "Trắng / Đen", hint: "Nến trắng viền đen và nến đen trên nền trắng, kiểu sách in", style: { bg: "light", bgColor: "#ffffff", up: "#ffffff", down: "#000000", grid: false } },
+];
+/** True when the style already looks like the template (so its button shows as selected). */
+export const isTemplate = (s: ChartStyle, t: (typeof CHART_TEMPLATES)[number]["style"]) =>
+  s.up === t.up && s.down === t.down && (s.bgColor ?? null) === (t.bgColor ?? null) && s.bg === t.bg && (s.grid !== false) === (t.grid !== false);
 
 /** a, b, c: a clicked point; ab / ba: the other two corners of a box (time of one point, price of the other). */
 export type HandlePart = "a" | "b" | "c" | "ab" | "ba";

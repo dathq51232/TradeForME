@@ -5,7 +5,7 @@ import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
@@ -603,7 +603,25 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             <button onClick={() => setStyleMenu((m) => !m)} title="Màu nến, nền biểu đồ, khối lượng"
               className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">🎨</button>
             {styleMenu && (
-              <div className="absolute left-0 z-20 mt-1 grid w-64 max-w-[90vw] gap-2 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+              <div className="absolute left-0 z-20 mt-1 grid max-h-[80vh] w-72 max-w-[90vw] gap-2 overflow-y-auto rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+                <div className="text-muted">Mẫu giao diện</div>
+                <div className="grid grid-cols-2 gap-1">
+                  {CHART_TEMPLATES.map((t) => {
+                    const on = isTemplate(view.style, t.style);
+                    const bg = t.style.bgColor ?? (t.style.bg === "light" ? "#ffffff" : "#0b0f17");
+                    return (
+                      <button key={t.label} onClick={() => setStyle({ ...t.style })} title={t.hint}
+                        className={`flex items-center gap-1.5 rounded border px-1.5 py-1 text-left ${on ? "border-accent text-foreground" : "border-border text-muted hover:text-foreground"}`}>
+                        {/* a tiny preview: the background with an up and a down candle */}
+                        <span className="flex h-5 w-7 shrink-0 items-end justify-center gap-0.5 rounded-sm border border-border px-0.5 pb-0.5" style={{ background: bg }}>
+                          <span className="h-3 w-1.5 rounded-[1px]" style={{ background: t.style.up, outline: `1px solid ${t.style.up === bg ? "#6b7280" : "transparent"}` }} />
+                          <span className="h-2 w-1.5 rounded-[1px]" style={{ background: t.style.down, outline: `1px solid ${t.style.down === bg ? "#6b7280" : "transparent"}` }} />
+                        </span>
+                        <span className="truncate">{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="text-muted">Màu nến</div>
                 <div className="grid grid-cols-2 gap-1">
                   {CANDLE_PRESETS.map((p) => {
@@ -623,12 +641,22 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                   <label className="flex items-center gap-1 text-muted">Giảm <input type="color" value={view.style.down} onChange={(e) => setStyle({ down: e.target.value })} className="h-6 w-8 cursor-pointer p-0" /></label>
                 </div>
                 <div className="text-muted">Nền biểu đồ</div>
-                <div className="flex rounded border border-border">
-                  {(["dark", "light"] as const).map((bg) => (
-                    <button key={bg} onClick={() => setStyle({ bg })}
-                      className={`flex-1 px-2 py-1 ${view.style.bg === bg ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}>{bg === "dark" ? "Tối" : "Sáng"}</button>
-                  ))}
+                <div className="flex items-center gap-2">
+                  <div className="flex flex-1 rounded border border-border">
+                    {(["dark", "light"] as const).map((bg) => (
+                      <button key={bg} onClick={() => setStyle({ bg, bgColor: null })}
+                        className={`flex-1 px-2 py-1 ${!view.style.bgColor && view.style.bg === bg ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}>{bg === "dark" ? "Tối" : "Sáng"}</button>
+                    ))}
+                  </div>
+                  <label className={`flex items-center gap-1 ${view.style.bgColor ? "text-foreground" : "text-muted"}`} title="Chọn màu nền tuỳ ý">Tuỳ chọn
+                    <input type="color" value={view.style.bgColor ?? (view.style.bg === "light" ? "#ffffff" : "#0b0f17")}
+                      onChange={(e) => setStyle({ bgColor: e.target.value, bg: bgFamily(e.target.value) })} className="h-6 w-8 cursor-pointer p-0" />
+                  </label>
                 </div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={view.style.grid !== false} onChange={(e) => setStyle({ grid: e.target.checked })} />
+                  <span>Hiện lưới (tắt cho đỡ rối mắt)</span>
+                </label>
                 <label className="flex cursor-pointer items-center gap-2">
                   <input type="checkbox" checked={view.style.volume} onChange={(e) => setStyle({ volume: e.target.checked })} />
                   <span>Khối lượng ở đáy biểu đồ giá</span>
