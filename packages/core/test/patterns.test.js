@@ -154,3 +154,63 @@ test('real data runs without errors and gives sane shapes', () => {
   assert.ok(candles.length > 0 && candles.length < bars.length / 2, `${candles.length} of ${bars.length}`);
   assert.ok(P.closeLevels(bars).length > 0);
 });
+
+// ---------- small continuation wedges ----------
+const Q = 900; // 15-minute bars
+/** Bars walking between waypoints, with a volume per bar. */
+function walk(points, vol, wick = 0.15) {
+  return path(points, wick).map((b, i) => ({ ...b, time: T0 + i * Q, volume: vol(i) }));
+}
+// sideways, a sharp drop (heavy volume) to 80, then a narrowing pullback on light volume
+// (lows 80 → 82 → 85: rising faster and faster; highs 88 → 87.6 → 87.3: flat to falling)
+const WEDGE = [[0, 100], [5, 101], [10, 99], [15, 101], [20, 99], [25, 101], [30, 99], [35, 101], [40, 100], [48, 80], [52, 88], [56, 82], [60, 87.6], [63, 85], [66, 87.3]];
+const wedgeVol = (i) => (i >= 40 && i <= 48 ? 300 : i > 48 ? 80 : 120);
+
+test('micro wedge: a narrowing pullback after a sharp drop is flagged before it breaks', () => {
+  const [w] = P.microWedges(walk([...WEDGE, [68, 86.6]], wedgeVol), { levels: [] });
+  assert.equal(w.kind, 'microWedgeDown');
+  assert.equal(w.bias, -1);
+  assert.equal(w.stage, 'ready');
+  assert.ok(w.score >= 60, `score ${w.score}`);
+  assert.ok(w.reasons.includes('Khối lượng co lại'));
+  assert.equal(w.entry, null);
+  assert.ok(w.lines.some((l) => l.role === 'upper') && w.lines.some((l) => l.role === 'lower'));
+});
+
+test('micro wedge: a close under the support breaks it, with entry, stop above the wedge and a target', () => {
+  const [w] = P.microWedges(walk([...WEDGE, [68, 86.6], [71, 82]], wedgeVol), { levels: [] });
+  assert.equal(w.stage, 'broken');
+  assert.equal(w.status, 'breakoutDown');
+  assert.ok(w.entry < 86.6 && w.stop > w.entry && w.target < w.entry);
+});
+
+test('micro wedge: a close over the resistance late in the wedge fails it', () => {
+  const [w] = P.microWedges(walk([...WEDGE, [68, 86.6], [72, 93]], wedgeVol), { levels: [] });
+  assert.equal(w.stage, 'failed');
+  assert.equal(w.entry, null);
+});
+
+test('micro wedge: mirrored after a sharp rise', () => {
+  const up = WEDGE.concat([[68, 86.6], [71, 82]]).map(([i, p]) => [i, 200 - p]);
+  const [w] = P.microWedges(walk(up, wedgeVol), { levels: [] });
+  assert.equal(w.kind, 'microWedgeUp');
+  assert.equal(w.status, 'breakoutUp');
+  assert.ok(w.target > w.entry && w.stop < w.entry);
+});
+
+test('micro wedge: nothing without a sharp leg', () => {
+  assert.deepEqual(P.microWedges(walk([[0, 100], [60, 101], [70, 100]], () => 100)), []);
+});
+
+test('micro wedge on BTCUSDT 15m (14/11/2026): ready from 01:00 UTC, broken at 01:45 before the drop', () => {
+  const raw = JSON.parse(readFileSync(new URL('./fixtures/btcusdt-15m-2026-11-14.json', import.meta.url), 'utf8'));
+  const bars = raw.map((k) => ({ time: k[0] / 1000, open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }));
+  const upTo = (iso) => bars.slice(0, bars.findIndex((b) => b.time >= Date.parse(iso) / 1000) + 1);
+  const before = P.microWedges(upTo('2026-11-14T01:00:00Z'))[0];
+  assert.equal(before.kind, 'microWedgeDown');
+  assert.equal(before.stage, 'ready');
+  const after = P.microWedges(upTo('2026-11-14T01:45:00Z'))[0];
+  assert.equal(after.stage, 'broken');
+  assert.ok(Math.abs(after.entry - 68290) < 1);
+  assert.ok(after.stop > after.entry && after.target < after.entry);
+});

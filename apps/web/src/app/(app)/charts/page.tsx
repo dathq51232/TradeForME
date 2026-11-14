@@ -21,7 +21,7 @@ const DEFAULT_LAYOUT: LayoutState = {
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
   overlays: { trades: true, events: true },
   view: { type: "candles", scale: "normal", magnet: false, style: DEFAULT_STYLE },
-  auto: { chart: true, candles: true, levels: true, periods: false, sessions: true, depth: 5 },
+  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, depth: 5 },
 };
 const KINDS = new Set<string>(SHAPE_KINDS);
 const CHART_TYPES = new Set(["candles", "hollow", "heikin", "bars", "line", "area"]);
@@ -52,6 +52,7 @@ function cleanLayout(raw: unknown): LayoutState {
     },
     auto: {
       chart: typeof s.auto?.chart === "boolean" ? s.auto.chart : DEFAULT_LAYOUT.auto.chart,
+      wedges: typeof s.auto?.wedges === "boolean" ? s.auto.wedges : DEFAULT_LAYOUT.auto.wedges,
       candles: typeof s.auto?.candles === "boolean" ? s.auto.candles : DEFAULT_LAYOUT.auto.candles,
       levels: typeof s.auto?.levels === "boolean" ? s.auto.levels : DEFAULT_LAYOUT.auto.levels,
       periods: typeof s.auto?.periods === "boolean" ? s.auto.periods : DEFAULT_LAYOUT.auto.periods,

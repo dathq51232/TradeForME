@@ -6,14 +6,14 @@ import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
-import { candlestickPatterns, chartPatterns, closeLevels, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
+import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
 
 export type Overlays = { trades: boolean; events: boolean };
 export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
-export type AutoSettings = { chart: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; depth: number };
+export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; depth: number };
 export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
@@ -61,13 +61,14 @@ const CANDLE_PRESETS = [
 ];
 const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; hint: string }[] = [
   { key: "chart", label: "Mô hình giá", hint: "Tam giác tăng/giảm/cân, tam giác mở rộng (tam giác ngược), nêm, hai đỉnh/hai đáy, vai đầu vai" },
+  { key: "wedges", label: "Nêm nhỏ tiếp diễn (báo sớm)", hint: "Sau một nhịp mạnh, giá hồi trong nêm hẹp dần; chấm điểm 0–100 (key level/EMA21, khối lượng, biên độ, RSI) và báo Sẵn sàng trước khi phá" },
   { key: "candles", label: "Mô hình nến", hint: "Búa, sao băng, nhấn chìm, harami, sao mai/sao hôm, ba chàng lính/ba con quạ, nhíp, marubozu…" },
   { key: "levels", label: "Key level theo giá đóng cửa", hint: "Vùng giá nến hay đóng cửa và đảo chiều; nét đậm hơn = mạnh hơn" },
   { key: "periods", label: "Giá đóng cửa ngày/tuần/tháng trước", hint: "Theo lịch UTC" },
   { key: "sessions", label: "Phiên Sydney/Tokyo/London/New York", hint: "Khung cao-thấp của từng phiên (khung ≤ 1H) và giờ mở/đóng phiên" },
 ];
 const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
-const STATUS_VI: Record<string, string> = { forming: "đang hình thành", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", expired: "hết hiệu lực" };
+const STATUS_VI: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 /** Session boxes over the loaded bars: each session's high and low (sessions with no bars are skipped). */
 function sessionBoxes(bars: Bar[], step: number): AutoDraw["sessions"] {
@@ -434,6 +435,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     const periodLen = { day: 86400, week: 7 * 86400, month: 28 * 86400 };
     return {
       patterns: auto.chart && bs.length ? chartPatterns(bs, { depth: auto.depth, max: 6 }) : [],
+      wedges: auto.wedges && bs.length ? microWedges(bs, { max: 3 }) : [],
       // markers only on the latest bars, and without marubozu (a strong bar, not a reversal), to keep the chart readable
       candles: auto.candles && bs.length ? candlestickPatterns(bs).filter((c) => c.i >= bs.length - 80 && !c.kind.endsWith("Marubozu")) : [],
       levels: auto.levels && bs.length ? closeLevels(bs, { max: 6 }) : [],
@@ -442,10 +444,13 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     };
   }, [rawBars, auto, step]);
   const autoDraw = useMemo<AutoDraw>(() => {
-    if (!found.patterns.length && !found.levels.length && !found.periods.length && !found.sessions.length) return NO_AUTO;
+    if (!found.patterns.length && !found.wedges.length && !found.levels.length && !found.periods.length && !found.sessions.length) return NO_AUTO;
     return {
       // the three newest patterns that still matter; older ones stay listed only while they are recent
-      patterns: found.patterns.filter((p) => p.status !== "expired").slice(0, 3),
+      patterns: [
+        ...found.wedges.filter((w) => w.stage !== "expired").slice(0, 2).map((w) => ({ ...w, name: `${w.name} ${w.score}đ` })),
+        ...found.patterns.filter((p) => p.status !== "expired").slice(0, 3),
+      ],
       levels: [
         ...found.levels.map((l) => ({
           price: l.price, from: l.first, color: l.side === "support" ? COLORS.up : COLORS.down, width: 0.5 + l.strength * 0.5, dashed: false,
@@ -466,6 +471,22 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const liveCandle = found.candles.filter((c) => c.i >= bars.length - 3).at(-1);
   const sessionNow = auto.sessions && clock ? sessionStatus(Math.floor(clock / 1000)) : null;
   const patternChips = found.patterns.filter((p) => p.status !== "expired").slice(0, 4);
+  const wedgeChips = found.wedges.filter((w) => w.stage !== "expired").slice(0, 2);
+  // báo khi nêm nhỏ mới nhất chuyển sang Sẵn sàng / Đã phá (mỗi trạng thái báo một lần)
+  const wedgeSeen = useRef(new Set<string>());
+  const liveWedge = found.wedges[0];
+  const liveKey = liveWedge && (liveWedge.stage === "ready" || liveWedge.stage === "broken") && rawBars?.length
+    && liveWedge.end >= rawBars[rawBars.length - 1].time - 3 * step ? `${symbol}${liveWedge.kind}${liveWedge.start}${liveWedge.stage}` : "";
+  useEffect(() => {
+    if (!liveKey || !liveWedge || wedgeSeen.current.has(liveKey)) return;
+    const first = wedgeSeen.current.size === 0 && !document.hasFocus();
+    wedgeSeen.current.add(liveKey);
+    const text = liveWedge.stage === "ready"
+      ? `${liveWedge.name} sẵn sàng phá (${liveWedge.score} điểm)`
+      : `${liveWedge.name} đã phá${liveWedge.entry != null ? ` tại ${fmt(liveWedge.entry, info.digits)}` : ""}`;
+    setNotice(`🔔 ${symbol}: ${text}`);
+    if (!first && typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(`${symbol} · ${text}`);
+  }, [liveKey, liveWedge, symbol, info.digits]);
 
   return (
     <div className="-m-4 flex min-h-[calc(100vh-7rem)] flex-col lg:-m-6 lg:flex-row">
@@ -674,7 +695,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         </div>
 
         {/* active indicators, drawings, alerts */}
-        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0 || patternChips.length > 0 || liveCandle) && (
+        {(indicators.length > 0 || hlines.length > 0 || shapes.length > 0 || activeTool || notice || recent.length > 0 || patternChips.length > 0 || wedgeChips.length > 0 || liveCandle) && (
           <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5 text-xs">
             {activeTool && (
               <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn">
@@ -729,6 +750,17 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </span>
             ))}
             {hidden && (shapes.length > 0 || hlines.length > 0) && <span className="text-warn">Hình vẽ đang ẩn</span>}
+            {wedgeChips.map((w) => (
+              <span key={`${w.kind}${w.start}`}
+                title={[
+                  w.reasons.length ? `Điểm ${w.score}/100: ${w.reasons.join(", ")}` : `Điểm ${w.score}/100`,
+                  w.entry != null ? `Vào ${fmt(w.entry, info.digits)} · SL ${fmt(w.stop ?? 0, info.digits)} · TP1 ${fmt(w.tp1 ?? 0, info.digits)} · TP2 ${fmt(w.target ?? 0, info.digits)}` : `Đỉnh nêm lúc ${new Date(w.apex * 1000).toLocaleString("vi-VN")}`,
+                  "Chỉ để tham khảo, không phải khuyến nghị.",
+                ].join("\n")}
+                className={`rounded border px-1.5 py-0.5 ${w.bias > 0 ? "border-up/40 text-up" : "border-down/40 text-down"} ${w.stage === "ready" ? "animate-pulse font-semibold" : ""} ${w.stage === "failed" ? "opacity-60" : ""}`}>
+                ◢ {w.name} · {STATUS_VI[w.status] ?? w.status} · {w.score}đ{w.entry != null ? ` · vào ${fmt(w.entry, info.digits)} SL ${fmt(w.stop ?? 0, info.digits)}` : ""}
+              </span>
+            ))}
             {patternChips.map((p) => (
               <span key={`${p.kind}${p.start}`} title={`${new Date(p.start * 1000).toLocaleString("vi-VN")} → ${new Date(p.end * 1000).toLocaleString("vi-VN")}${p.target != null ? ` · mục tiêu ${fmt(p.target, info.digits)}` : ""}`}
                 className={`rounded border px-1.5 py-0.5 ${p.bias > 0 ? "border-up/40 text-up" : p.bias < 0 ? "border-down/40 text-down" : "border-warn/40 text-warn"}`}>

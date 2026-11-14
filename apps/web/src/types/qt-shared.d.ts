@@ -52,6 +52,17 @@ declare module "@qt/core/patterns" {
   export const SESSIONS: { id: string; name: string; tz: string; open: number; close: number; color: string }[];
   export function swingPivots(bars: Bar[], depth?: number): { i: number; time: number; price: number; kind: "H" | "L" }[];
   export function chartPatterns(bars: Bar[], opts?: { depth?: number; max?: number }): ChartPattern[];
+  export type MicroWedge = {
+    kind: "microWedgeDown" | "microWedgeUp"; name: string; bias: -1 | 1;
+    status: "forming" | "ready" | "breakoutUp" | "breakoutDown" | "failed" | "expired";
+    stage: "forming" | "ready" | "broken" | "failed" | "expired"; score: number; reasons: string[];
+    start: number; end: number; apex: number; target: number | null; entry: number | null; stop: number | null; tp1: number | null;
+    lines: { role: "upper" | "lower" | "path" | "support"; a: P; b: P }[]; label: P;
+  };
+  export const MICRO_WEDGE_NAMES: Record<MicroWedge["kind"], string>;
+  export function microWedges(bars: Bar[], opts?: {
+    depth?: number; lookback?: number; impulseAtr?: number; maxImpulseBars?: number; readyScore?: number; max?: number; levels?: number[];
+  }): MicroWedge[];
   export function candlestickPatterns(bars: Bar[], opts?: { doji?: boolean }): CandlePattern[];
   export function closeLevels(bars: Bar[], opts?: { lookback?: number; max?: number; depth?: number }): CloseLevel[];
   export function periodCloses(bars: Bar[]): PeriodClose[];

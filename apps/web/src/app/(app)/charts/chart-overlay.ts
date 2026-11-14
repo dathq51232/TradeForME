@@ -102,7 +102,7 @@ export type AutoDraw = {
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [] };
-const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", expired: "hết hiệu lực" };
+const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 export class ChartOverlay implements ISeriesPrimitive<Time> {
   shapes: Shape[] = [];
@@ -295,13 +295,13 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     ctx.font = "11px system-ui, sans-serif";
     for (const pat of this.auto.patterns) {
       const color = pat.bias > 0 ? COLOR.up : pat.bias < 0 ? COLOR.down : COLOR.medium;
-      const faded = pat.status === "expired";
+      const faded = pat.status === "expired" || pat.status === "failed";
       for (const l of pat.lines) {
         const a = this.xy(l.a), b = this.xy(l.b);
         if (!a || !b) continue;
         ctx.globalAlpha = faded ? 0.35 : 0.85;
         ctx.strokeStyle = color;
-        ctx.lineWidth = l.role === "path" ? 1 : 1.5;
+        ctx.lineWidth = l.role === "path" || l.role === "support" ? 1 : 1.5;
         ctx.setLineDash(l.role === "neck" ? [6, 4] : []);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
