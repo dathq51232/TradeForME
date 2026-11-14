@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Collapsible panels: <html data-nav="collapsed"> / <html data-wl="collapsed">, set by <PanelToggle> and restored
+   before first paint by the inline script in the root layout. */
+@custom-variant nav-collapsed (html[data-nav="collapsed"] &);
+@custom-variant nav-expanded (html:not([data-nav="collapsed"]) &);
+@custom-variant wl-collapsed (html[data-wl="collapsed"] &);
+@custom-variant wl-expanded (html:not([data-wl="collapsed"]) &);
+
 /* Dark institutional palette (docs/PHAN-TICH-NANG-CAP.md, design §3.2). The terminal is dark-only. */
 :root {
   color-scheme: dark;

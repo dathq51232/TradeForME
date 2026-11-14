@@ -6,18 +6,26 @@ import { createClient } from "@/lib/supabase/server";
 import { requestTime } from "@/lib/auth";
 import { connection } from "@/lib/format";
 import { NotificationsBell } from "@/components/notifications";
+import { PanelToggle } from "@/components/panel-toggle";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <aside className="border-b border-border bg-panel md:w-14 md:border-b-0 md:border-r lg:w-56">
+      <aside className="border-b border-border bg-panel transition-[width] md:flex md:w-14 md:flex-col md:border-b-0 md:border-r lg:w-56 nav-collapsed:lg:w-14">
         <Link href="/dashboard" className="hidden items-center gap-2 px-4 py-3.5 md:flex">
           <span className="grid h-6 w-6 place-items-center rounded bg-accent text-xs font-bold text-white">Q</span>
-          <span className="hidden text-sm font-semibold lg:inline">Quant Terminal</span>
+          <span className="hidden text-sm font-semibold lg:inline nav-collapsed:lg:hidden">Quant Terminal</span>
         </Link>
         <Suspense fallback={<SidebarNav path="" />}>
           <Sidebar />
         </Suspense>
+        {/* only wide screens have a full sidebar to collapse; tablets already show icons only */}
+        <PanelToggle panel="nav" title="Thu gọn / mở rộng menu"
+          className="mx-2 mb-3 mt-auto hidden items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-panel-2 hover:text-foreground lg:flex">
+          <span aria-hidden className="w-4 text-center nav-collapsed:hidden">«</span>
+          <span aria-hidden className="w-4 text-center nav-expanded:hidden">»</span>
+          <span className="nav-collapsed:hidden">Thu gọn menu</span>
+        </PanelToggle>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 items-center justify-end gap-3 border-b border-border px-4">

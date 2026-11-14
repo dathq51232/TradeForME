@@ -31,8 +31,8 @@ export function SidebarNav({ path }: { path: string }) {
           return (
             <span key={n.href} className={`${base} cursor-not-allowed text-muted/60`} title="Chưa có">
               <span aria-hidden className="w-4 text-center">{n.icon}</span>
-              <span className="hidden lg:inline">{n.label}</span>
-              <span className="ml-auto hidden rounded bg-panel-2 px-1 text-[0.65rem] lg:inline">{n.soon}</span>
+              <span className="hidden lg:inline nav-collapsed:lg:hidden">{n.label}</span>
+              <span className="ml-auto hidden rounded bg-panel-2 px-1 text-[0.65rem] lg:inline nav-collapsed:lg:hidden">{n.soon}</span>
             </span>
           );
         }
@@ -40,7 +40,7 @@ export function SidebarNav({ path }: { path: string }) {
           <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined}
             className={`${base} ${active ? "bg-accent/15 text-foreground" : "text-muted hover:bg-panel-2 hover:text-foreground"}`}>
             <span aria-hidden className="w-4 text-center">{n.icon}</span>
-            <span className="md:hidden lg:inline">{n.label}</span>
+            <span className="md:hidden lg:inline nav-collapsed:lg:hidden">{n.label}</span>
           </Link>
         );
       })}

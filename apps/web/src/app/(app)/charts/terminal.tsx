@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
+import { PanelToggle } from "@/components/panel-toggle";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { candlestickPatterns, chartPatterns, closeLevels, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
@@ -454,18 +455,23 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
 
   return (
     <div className="-m-4 flex min-h-[calc(100vh-7rem)] flex-col lg:-m-6 lg:flex-row">
-      {/* Watchlist */}
-      <aside className="border-b border-border bg-panel lg:w-60 lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between px-3 py-2 text-xs text-muted">
-          <span>Watchlist</span>
+      {/* Watchlist: on the right on wide screens (on top on phones); collapses to a thin strip */}
+      <aside className="order-first border-b border-border bg-panel lg:order-last lg:w-60 lg:shrink-0 lg:border-b-0 lg:border-l wl-collapsed:lg:w-10">
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted wl-collapsed:lg:justify-center wl-collapsed:lg:px-0">
+          <PanelToggle panel="wl" title="Thu gọn / mở rộng watchlist"
+            className="rounded px-2 py-1 text-sm leading-none hover:bg-panel-2 hover:text-foreground">
+            <span aria-hidden className="wl-collapsed:hidden"><span className="lg:hidden">▴</span><span className="hidden lg:inline">»</span></span>
+            <span aria-hidden className="wl-expanded:hidden"><span className="lg:hidden">▾</span><span className="hidden lg:inline">«</span></span>
+          </PanelToggle>
+          <span className="wl-collapsed:lg:hidden">Watchlist</span>
           {notInList.length > 0 && (
-            <select aria-label="Thêm symbol" value="" onChange={(e) => e.target.value && saveWatchlist([...watchlist, e.target.value])} className="w-24 py-0.5 text-xs">
+            <select aria-label="Thêm symbol" value="" onChange={(e) => e.target.value && saveWatchlist([...watchlist, e.target.value])} className="ml-auto w-24 py-0.5 text-xs wl-collapsed:hidden">
               <option value="">+ Thêm</option>
               {notInList.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
         </div>
-        <ul className="flex overflow-x-auto lg:block">
+        <ul className="flex overflow-x-auto lg:block wl-collapsed:hidden">
           {watchlist.map((s) => {
             const q = quotes[s];
             const active = s === symbol;
