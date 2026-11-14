@@ -447,3 +447,6 @@ verify_jwt = false
 
 [functions.market-cron]
 verify_jwt = false
+
+[functions.radar-cron]
+verify_jwt = false

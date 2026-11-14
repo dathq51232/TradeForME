@@ -61,3 +61,10 @@ jobs:
           curl -fsS -X POST "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_ID}/database/query" \
             -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" -H "Content-Type: application/json" \
             -d "{\"query\": \"select public.schedule_market_cron('${url}') as result\"}"
+      # radar-cron (arbitrage, pumps, new listings across seven exchanges) every minute, the same way.
+      - name: Schedule radar-cron
+        run: |
+          url="https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/radar-cron"
+          curl -fsS -X POST "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_ID}/database/query" \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" -H "Content-Type: application/json" \
+            -d "{\"query\": \"select public.schedule_radar_cron('${url}') as result\"}"

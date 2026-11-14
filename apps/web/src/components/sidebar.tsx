@@ -8,6 +8,7 @@ const NAV: { href: string; label: string; icon: string; soon?: string }[] = [
   { href: "/charts", label: "Biểu đồ", icon: "◩" },
   { href: "/accounts", label: "Tài khoản MT5", icon: "▤" },
   { href: "/copy", label: "Copy Trading", icon: "⇉" },
+  { href: "/radar", label: "Radar thị trường", icon: "◎" },
   { href: "/positions", label: "Vị thế", icon: "≡", soon: "sắp có" },
   { href: "/history", label: "Lệnh & lịch sử", icon: "☰", soon: "sắp có" },
   { href: "/risk", label: "Quản lý rủi ro", icon: "△", soon: "sắp có" },

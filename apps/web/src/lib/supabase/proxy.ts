@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { isSupabaseConfigured, supabaseEnv } from "./env";
 
 /** Routes that need a signed-in user. */
-export const PROTECTED = ["/dashboard", "/accounts", "/copy", "/admin"];
+export const PROTECTED = ["/dashboard", "/accounts", "/copy", "/radar", "/admin"];
 
 /** Refreshes the Supabase session cookie on every request and guards protected routes. */
 export async function updateSession(request: NextRequest) {
