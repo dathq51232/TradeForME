@@ -301,7 +301,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
         if (!a || !b) continue;
         ctx.globalAlpha = faded ? 0.35 : 0.85;
         ctx.strokeStyle = color;
-        ctx.lineWidth = l.role === "path" || l.role === "support" ? 1 : 1.5;
+        ctx.lineWidth = l.role === "path" ? 1 : l.role === "support" || l.role === "lower" ? 2 : 1.5;
         ctx.setLineDash(l.role === "neck" ? [6, 4] : []);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }

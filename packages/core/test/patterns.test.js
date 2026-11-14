@@ -214,3 +214,18 @@ test('micro wedge on BTCUSDT 15m (14/11/2026): ready from 01:00 UTC, broken at 0
   assert.ok(Math.abs(after.entry - 68290) < 1);
   assert.ok(after.stop > after.entry && after.target < after.entry);
 });
+
+test('micro wedge on BTCUSDT 15m: rising wedge (top rising slower than a curving support) breaks at 07:30 UTC', () => {
+  const raw = JSON.parse(readFileSync(new URL('./fixtures/btcusdt-15m-2026-11-14.json', import.meta.url), 'utf8'));
+  const bars = raw.map((k) => ({ time: k[0] / 1000, open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }));
+  const upTo = (iso) => bars.slice(0, bars.findIndex((b) => b.time >= Date.parse(iso) / 1000) + 1);
+  const ready = P.microWedges(upTo('2026-11-14T07:15:00Z'))[0];
+  assert.equal(ready.stage, 'ready');
+  const upper = ready.lines.find((l) => l.role === 'upper');
+  assert.ok(upper.b.p > upper.a.p, 'the top rises');
+  assert.ok(ready.lines.filter((l) => l.role === 'support' || l.role === 'lower').length >= 2, 'the support bends');
+  assert.ok(!ready.lines.some((l) => l.role === 'path'), 'no impulse line drawn');
+  const broken = P.microWedges(upTo('2026-11-14T07:30:00Z'))[0];
+  assert.equal(broken.stage, 'broken');
+  assert.ok(Math.abs(broken.entry - 67041) < 1);
+});

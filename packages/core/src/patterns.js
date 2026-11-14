@@ -219,13 +219,12 @@ export const MICRO_WEDGE_NAMES = { microWedgeDown: "Nêm nhỏ giảm (tiếp di
 
 /**
  * Small continuation wedge after a sharp leg: price drops hard (an impulse of at least `impulseAtr` ATR within
- * `maxImpulseBars` bars), then pulls back in a narrowing wedge (lows rising, often faster and faster; highs flat
- * or falling) and usually breaks out the way the impulse went. Mirrored for a sharp rise.
- * The support is the lower convex hull of the dips since the impulse low (a dip: a low under the bar before and the
- * 2 bars after), so it follows a curving, accelerating support the way a trader draws it and shows up 2 bars after
- * each touch. The newest segment of that hull (at least 3 bars long, at most 0.6 ATR a bar) is the line that must hold. The resistance is the first edge of the upper hull
- * of the highs from the highest high of the pullback. A 0–100 score comes from the context that tends to come
- * before the break:
+ * `maxImpulseBars` bars), then pulls back in a narrowing wedge (lows rising, often faster and faster; highs flat,
+ * falling, or rising more slowly) and usually breaks out the way the impulse went. Mirrored for a sharp rise.
+ * The support is the lower convex hull of the lows since the impulse low (up to 2 bars ago), so it bends with a
+ * curving, accelerating support the way a trader draws it and is drawn as that curve; its newest segment (at least
+ * `minEdge` bars long, at most 0.6 ATR a bar) is the line that must hold. The resistance is the newest segment of
+ * the highs' upper hull. A 0–100 score comes from the context that tends to come before the break:
  *   +25 the top of the wedge sits on a key level or the EMA21 (within 0.3 ATR)
  *   +20 volume in the wedge under 70% of the impulse's
  *   +15 the range is shrinking (mean range of 5 bars / 20 bars < 0.8)
@@ -233,18 +232,19 @@ export const MICRO_WEDGE_NAMES = { microWedgeDown: "Nêm nhỏ giảm (tiếp di
  *   +10 RSI pulled back only to 40–60 (mirrored for the bullish wedge)
  *   +15 at most 5 bars left to the apex
  * stage: "forming" → "ready" (score ≥ readyScore and ≥ 60% of the way to the apex, not broken yet) → "broken"
- * (a close beyond the support), or "failed" (a close beyond the resistance) / "expired" (past the apex).
+ * (a close `breakAtr` ATR beyond the support), or "failed" (a close beyond the resistance) / "expired" (past the apex).
  * A reading aid, not a signal.
  * @param {{ depth?: number, lookback?: number, impulseAtr?: number, maxImpulseBars?: number, readyScore?: number,
- *   max?: number, levels?: number[] }} [opts] depth: pivot strength for the impulse low; levels: key-level prices
- *   (default: closeLevels of the bars)
+ *   max?: number, levels?: number[], minEdge?: number, breakAtr?: number }} [opts] depth: pivot strength for the impulse
+ *   low; levels: key-level prices (default: closeLevels of the bars); minEdge: shortest line segment in bars (3);
+ *   breakAtr: how far past the support a close must be to count as a break (0.25 ATR)
  * @returns {{ kind: "microWedgeDown"|"microWedgeUp", name: string, bias: -1|1, status: string,
  *   stage: "forming"|"ready"|"broken"|"failed"|"expired", score: number, reasons: string[], start: number, end: number,
  *   apex: number, target: number|null, entry: number|null, stop: number|null, tp1: number|null,
  *   lines: { role: string, a: {t:number,p:number}, b: {t:number,p:number} }[], label: {t:number,p:number} }[]} newest first
  */
 export function microWedges(bars, opts = {}) {
-  const { depth = 2, lookback = 200, impulseAtr = 3, maxImpulseBars = 25, readyScore = 60, max = 3 } = opts;
+  const { depth = 2, lookback = 200, impulseAtr = 3, maxImpulseBars = 25, readyScore = 60, max = 3, minEdge = 3, breakAtr = 0.25 } = opts;
   if (bars.length < 40) return [];
   const levels = opts.levels ?? closeLevels(bars, { max: 8 }).map((l) => l.price);
   const neg = (v) => (v == null ? null : -v);
@@ -256,7 +256,7 @@ export function microWedges(bars, opts = {}) {
     lines: w.lines.map((l) => ({ ...l, a: { t: l.a.t, p: -l.a.p }, b: { t: l.b.t, p: -l.b.p } })),
     label: { t: w.label.t, p: -w.label.p },
   });
-  const cfg = { depth, lookback, impulseAtr, maxImpulseBars, readyScore };
+  const cfg = { depth, lookback, impulseAtr, maxImpulseBars, readyScore, minEdge, breakAtr };
   const down = bearWedges(bars, levels, cfg);
   const up = bearWedges(bars.map(flip), levels.map((p) => -p), cfg).map(unflip);
   return [...down, ...up].sort((a, b) => b.end - a.end).slice(0, max);
@@ -290,47 +290,49 @@ function hull(points, sign) {
 
 /**
  * The wedge after impulse low L0 using bars L0.i..i1, or null.
- * Lower line: the newest edge of the lows' lower hull spanning at least 2 bars; upper line: the first edge of the
- * highs' upper hull from the highest high after L0.
+ * Lower line: the newest edge (at least `minEdge` bars long) of the lows' lower hull; upper line: the newest edge
+ * (at least `minEdge` bars long) of the highs' upper hull. The top may be flat, falling, or rising more slowly than
+ * the support (a rising wedge); the two lines must converge.
  */
-function wedgeAt(bars, atr, L0, i1, impulse) {
+function wedgeAt(bars, atr, L0, i1, impulse, minEdge = 3) {
   const span = i1 - L0.i;
   if (span < 6 || span > 60) return null;
   const lowsPts = [], highsPts = [];
-  // the support is drawn on dips: a low under the bar before it and the 2 bars after it (so a dip still in progress
-  // does not drag the line down to itself, and the bars of a rally are not mistaken for support)
-  lowsPts.push({ i: L0.i, price: L0.price });
-  for (let i = L0.i + 1; i <= i1 - 2; i++) {
-    const l = bars[i].low;
-    if (l <= bars[i - 1].low && l <= bars[i + 1].low && l <= bars[i + 2].low) lowsPts.push({ i, price: l });
-  }
+  // the support hugs every low up to 2 bars ago (a dip still in progress does not drag the line down to itself);
+  // its lower hull bends upward the way an accelerating support is drawn by hand
+  for (let i = L0.i; i <= i1 - 2; i++) lowsPts.push({ i, price: bars[i].low });
   let m = L0.i + 1;
-  for (let i = L0.i + 1; i <= i1; i++) if (bars[i].high >= bars[m].high) m = i;
-  for (let i = m; i <= i1; i++) highsPts.push({ i, price: bars[i].high });
+  for (let i = L0.i + 1; i <= i1; i++) {
+    highsPts.push({ i, price: bars[i].high });
+    if (bars[i].high >= bars[m].high) m = i;
+  }
   const lh = hull(lowsPts, 1), uh = hull(highsPts, -1);
-  if (lh.length < 2 || uh.length < 2) return null;
-  let k = lh.length - 1;
-  while (k > 0 && lh[k].i - lh[k - 1].i < 3) k--;
-  if (k === 0) return null;
-  // resistance: from the highest high to the first hull vertex at least 3 bars on (a high just next to the top is
-  // part of the same swing); the highs in between may poke out by a little
-  const q = uh.findIndex((p) => p.i - m >= 3);
-  if (q < 1) return null;
-  const Lw = { a: lh[k - 1], b: lh[k] }, U = { a: uh[0], b: uh[q] };
+  const newest = (h) => {
+    let k = h.length - 1;
+    while (k > 0 && h[k].i - h[k - 1].i < minEdge) k--;
+    return k;
+  };
+  const k = newest(lh), q = newest(uh);
+  if (k < 1 || q < 1) return null;
+  const Lw = { a: lh[k - 1], b: lh[k] }, U = { a: uh[q - 1], b: uh[q] };
   const a = atr[i1];
-  if (highsPts.some((p) => p.price > lineAt(U, p.i) + 0.3 * a)) return null;
+  // highs after the resistance's last touch may poke out by a little
+  if (highsPts.some((p) => p.i > U.b.i && p.price > lineAt(U, p.i) + 0.3 * a)) return null;
   const sl = (Lw.b.price - Lw.a.price) / (Lw.b.i - Lw.a.i) / a;
   const su = (U.b.price - U.a.price) / (U.b.i - U.a.i) / a;
-  if (sl <= 0 || sl > 0.6 || su > 0.03 || sl <= su) return null; // support steeper than 0.6 ATR a bar is a rally, not a wedge
-  const w0 = lineAt(U, L0.i) - Math.max(L0.price, lineAt(Lw, L0.i)), w1 = lineAt(U, i1) - lineAt(Lw, i1);
-  if (w0 <= 0 || w1 <= 0 || w1 > 0.65 * w0) return null;
-  const retrace = (bars[m].high - L0.price) / impulse;
+  // support rising (but under 0.6 ATR a bar: steeper is a rally, not a wedge) and faster than the top
+  if (sl <= 0 || sl > 0.6 || sl <= su) return null;
+  const height = bars[m].high - L0.price, w1 = lineAt(U, i1) - lineAt(Lw, i1);
+  if (w1 <= 0 || w1 > 0.65 * height) return null;
+  const retrace = height / impulse;
   if (retrace < 0.2 || retrace > 0.8) return null;
-  return { U, Lw, support: lh.slice(0, k + 1), top: bars[m].high, j: i1, apex: i1 + Math.ceil(w1 / ((sl - su) * a)), sl, su };
+  const apex = i1 + Math.ceil(w1 / ((sl - su) * a));
+  if (apex - i1 > 40) return null;
+  return { U, Lw, support: lh.slice(0, k + 1), top: bars[m].high, j: i1, apex, sl, su };
 }
 
 /** Bearish micro wedges (the bullish ones run through this on flipped bars). */
-function bearWedges(bars, levels, { depth, lookback, impulseAtr, maxImpulseBars, readyScore }) {
+function bearWedges(bars, levels, { depth, lookback, impulseAtr, maxImpulseBars, readyScore, minEdge, breakAtr }) {
   const n = bars.length, last = n - 1;
   const atr = atrSeries(bars);
   const closes = bars.map((b) => b.close);
@@ -341,7 +343,8 @@ function bearWedges(bars, levels, { depth, lookback, impulseAtr, maxImpulseBars,
   const timeAt = (i) => (i <= last ? bars[i].time : bars[last].time + (i - last) * step);
   const P = (i, p) => ({ t: timeAt(i), p });
   const out = [];
-  let usedFrom = Infinity; // a newer wedge owns the bars from its impulse on
+  // a newer wedge owns the bars from its base low on; its impulse may be the leg that broke the older wedge
+  let usedFrom = Infinity;
 
   for (let k = piv.length - 1; k >= 0; k--) {
     const L0 = piv[k];
@@ -358,12 +361,12 @@ function bearWedges(bars, levels, { depth, lookback, impulseAtr, maxImpulseBars,
 
     // walk forward: the wedge drawn on the bars so far, then whether the next bar closes outside it
     let best = null, status = "forming", e = last;
-    for (let i = L0.i + 7; i <= Math.min(last, L0.i + 61); i++) {
+    for (let i = L0.i + 7; i <= Math.min(last, L0.i + 61, usedFrom - 1); i++) {
       if (bars[i].low < L0.price) break; // a new low: L0 was not the bottom of a pullback
-      const w = wedgeAt(bars, atr, L0, i, impulse);
+      const w = wedgeAt(bars, atr, L0, i, impulse, minEdge);
       if (best) {
         if (i > best.apex + 2) { status = "expired"; e = i; break; }
-        if (bars[i].close < lineAt(best.Lw, i) - 0.1 * atr[i]) { status = "breakoutDown"; e = i; break; }
+        if (bars[i].close < lineAt(best.Lw, i) - breakAtr * atr[i]) { status = "breakoutDown"; e = i; break; }
         // a close over the resistance fails the wedge, unless the pullback is still shallow and young: then its top
         // is redrawn from the bars that follow (the first touches of a wedge are often made this way)
         if (bars[i].close > lineAt(best.U, i) + 0.1 * atr[i] && !w) {
@@ -413,15 +416,15 @@ function bearWedges(bars, levels, { depth, lookback, impulseAtr, maxImpulseBars,
       start: bars[h].time, end: timeAt(status === "forming" ? Math.max(apex, last) : e), apex: timeAt(apex),
       target, entry, stop, tp1: nextLevel ?? target,
       lines: [
-        { role: "path", a: P(h, bars[h].high), b: P(L0.i, L0.price) },
-        { role: "upper", a: P(L0.i, lineAt(U, L0.i)), b: P(drawTo, lineAt(U, drawTo)) },
+        // resistance from its first touch (not stretched back to the impulse low)
+        { role: "upper", a: P(U.a.i, U.a.price), b: P(drawTo, lineAt(U, drawTo)) },
         // the curving support: earlier hull edges, then the active edge out to the apex
         ...sup.slice(1, -1).map((p, q) => ({ role: "support", a: P(sup[q].i, sup[q].price), b: P(p.i, p.price) })),
         { role: "lower", a: P(Lw.a.i, Lw.a.price), b: P(drawTo, lineAt(Lw, drawTo)) },
       ],
-      label: P(L0.i, Math.max(best.top, lineAt(U, L0.i))),
+      label: P(U.a.i, U.a.price),
     });
-    usedFrom = h;
+    usedFrom = L0.i;
   }
   return out;
 }

@@ -448,7 +448,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     return {
       // the three newest patterns that still matter; older ones stay listed only while they are recent
       patterns: [
-        ...found.wedges.filter((w) => w.stage !== "expired").slice(0, 2).map((w) => ({ ...w, name: `${w.name} ${w.score}đ` })),
+        ...found.wedges.filter((w) => w.stage !== "expired").slice(0, 3).map((w) => ({ ...w, name: `${w.name} ${w.score}đ` })),
         ...found.patterns.filter((p) => p.status !== "expired").slice(0, 3),
       ],
       levels: [
@@ -471,7 +471,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const liveCandle = found.candles.filter((c) => c.i >= bars.length - 3).at(-1);
   const sessionNow = auto.sessions && clock ? sessionStatus(Math.floor(clock / 1000)) : null;
   const patternChips = found.patterns.filter((p) => p.status !== "expired").slice(0, 4);
-  const wedgeChips = found.wedges.filter((w) => w.stage !== "expired").slice(0, 2);
+  const wedgeChips = found.wedges.filter((w) => w.stage !== "expired").slice(0, 3);
   // báo khi nêm nhỏ mới nhất chuyển sang Sẵn sàng / Đã phá (mỗi trạng thái báo một lần)
   const wedgeSeen = useRef(new Set<string>());
   const liveWedge = found.wedges[0];
