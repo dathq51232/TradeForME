@@ -149,6 +149,18 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     try { window.localStorage.setItem("qt-ind-hidden", h ? "0" : "1"); } catch { /* storage blocked: this visit only */ }
     return !h;
   });
+  // signal texts (pattern names, "Mục tiêu", candle names, "Vol ×2.9"…) off the chart, arrows and dots kept; remembered on this browser
+  const [textHidden, setTextHidden] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount: storage is not there on the server
+      if (window.localStorage.getItem("qt-pattern-text-hidden") === "1") setTextHidden(true);
+    } catch { /* storage blocked: start shown */ }
+  }, []);
+  const toggleTextHidden = () => setTextHidden((h) => {
+    try { window.localStorage.setItem("qt-pattern-text-hidden", h ? "0" : "1"); } catch { /* storage blocked: this visit only */ }
+    return !h;
+  });
   const chartApi = useRef<ChartHandle>(null);
   const shell = useRef<HTMLElement>(null);
   const history = useRef<Record<string, { hlines: number[]; shapes: Shape[] }[]>>({});
@@ -480,7 +492,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     // candlestick-pattern labels belong to pattern recognition: "Ẩn tất cả" takes them off too
     ...(indHidden ? [] : found.candles).map((c): TimedMarker => ({
       time: c.time, position: c.bias < 0 ? "aboveBar" : "belowBar", shape: c.bias > 0 ? "arrowUp" : c.bias < 0 ? "arrowDown" : "circle",
-      color: c.bias > 0 ? COLORS.up : c.bias < 0 ? COLORS.down : COLORS.muted, text: c.name,
+      color: c.bias > 0 ? COLORS.up : c.bias < 0 ? COLORS.down : COLORS.muted, text: c.name, signal: true,
     })),
   ], [tradeMarkers, found.candles, indHidden]);
   const liveCandle = found.candles.filter((c) => c.i >= bars.length - 3).at(-1);
@@ -694,6 +706,11 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
           </div>
           <PatternAlertsButton signedIn={signedIn} symbol={symbol} />
+          <button onClick={toggleTextHidden} aria-pressed={textHidden}
+            title={textHidden ? "Hiện lại chữ báo hiệu mô hình trên biểu đồ" : "Ẩn chữ báo hiệu mô hình (vai đầu vai, nhấn chìm, mục tiêu, Vol ×…); giữ mũi tên, chấm tròn và đường vẽ — rê chuột vào nến để xem tên"}
+            className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${textHidden ? "border-warn/50 bg-warn/10 text-warn" : "border-border"}`}>
+            {textHidden ? "Aa Hiện chữ" : "Aa Ẩn chữ"}
+          </button>
           <div className="relative">
             <button onClick={() => setAutoMenu((m) => !m)} title="Tự nhận diện mô hình giá, mô hình nến, key level và phiên giao dịch"
               className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${AUTO_LAYERS.some((l) => auto[l.key]) ? "border-accent/50 text-accent" : "border-border"}`}>🔍 Tự nhận diện</button>
@@ -858,7 +875,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
           <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indHidden ? NO_INDICATORS : indicators}
             chartType={view.type} scaleMode={view.scale} magnet={view.magnet} style={view.style}
-            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={indHidden ? NO_AUTO : autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines}
+            hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={indHidden ? NO_AUTO : autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines} patternText={!textHidden}
             tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (

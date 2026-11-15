@@ -151,7 +151,7 @@ export type AutoDraw = {
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [] };
-const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
+export const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 export class ChartOverlay implements ISeriesPrimitive<Time> {
   shapes: Shape[] = [];
@@ -160,6 +160,8 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
   hidden = false;
   events: ChartEvent[] = [];
   auto: AutoDraw = NO_AUTO;
+  /** false: pattern names and "Mục tiêu" texts are left off; the pattern lines stay */
+  patternText = true;
   index = new TimeIndex([], 3600);
   digits = 2;
   private chart: IChartApi | null = null;
@@ -172,7 +174,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     this.request = p.requestUpdate;
   }
   detached() { this.chart = null; this.series = null; this.request = null; }
-  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "auto" | "index" | "digits">>) {
+  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "auto" | "index" | "digits" | "patternText">>) {
     Object.assign(this, patch);
     this.request?.();
   }
@@ -355,7 +357,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       const at = this.xy(pat.label);
-      if (at) this.label(ctx, `${pat.name} · ${STATUS_TEXT[pat.status] ?? pat.status}`, at.x, at.y - 8, faded ? COLOR.low : color);
+      if (at && this.patternText) this.label(ctx, `${pat.name} · ${STATUS_TEXT[pat.status] ?? pat.status}`, at.x, at.y - 8, faded ? COLOR.low : color);
       if (pat.target != null && !faded) {
         const xe = this.x(pat.end), yt = this.y(pat.target);
         if (xe != null && yt != null) {
@@ -364,9 +366,11 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
           ctx.lineWidth = 1;
           ctx.setLineDash([2, 3]);
           ctx.beginPath(); ctx.moveTo(xe, yt); ctx.lineTo(xe + 70, yt); ctx.stroke();
-          ctx.font = "10px system-ui, sans-serif";
-          this.label(ctx, `Mục tiêu ${pat.target.toFixed(this.digits)}`, xe + 2, yt - 4, color);
-          ctx.font = "11px system-ui, sans-serif";
+          if (this.patternText) {
+            ctx.font = "10px system-ui, sans-serif";
+            this.label(ctx, `Mục tiêu ${pat.target.toFixed(this.digits)}`, xe + 2, yt - 4, color);
+            ctx.font = "11px system-ui, sans-serif";
+          }
         }
       }
     }

@@ -5,7 +5,7 @@ import {
   type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType, type LineStyle,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
-import { ChartOverlay, SHAPE_POINTS, TimeIndex, chartTheme, luminance, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown> };
@@ -13,7 +13,10 @@ export type Tool = null | "hline" | ShapeKind;
 export type ChartType = "candles" | "hollow" | "heikin" | "bars" | "line" | "area";
 export type ScaleMode = "normal" | "log" | "percent";
 /** A marker at any unix time; it is moved onto the bar that contains it. */
-export type TimedMarker = { time: number; position: "aboveBar" | "belowBar" | "inBar"; shape: "arrowUp" | "arrowDown" | "circle" | "square"; color: string; text?: string };
+/** signal: a pattern-recognition marker (its text goes off with "Ẩn chữ"); trade markers leave it unset */
+export type TimedMarker = { time: number; position: "aboveBar" | "belowBar" | "inBar"; shape: "arrowUp" | "arrowDown" | "circle" | "square"; color: string; text?: string; signal?: boolean };
+/** Signal texts taken off the chart, shown again when the mouse is over that bar */
+type Tip = { text: string; color: string };
 export type PriceLineSpec = { price: number; color: string; title: string; dashed?: boolean };
 export type HLine = { price: number; alert: boolean };
 /** What the toolbar can ask the chart to do. */
@@ -81,6 +84,8 @@ type Props = {
   auto: AutoDraw;
   tradeMarkers: TimedMarker[];
   tradeLines: PriceLineSpec[];
+  /** false: signal texts are dropped (pattern names, targets, indicator marker texts such as "Vol ×2.9"); arrows, dots and lines stay */
+  patternText?: boolean;
   tool: Tool;
   onAddLine: (price: number) => void;
   onAddShape: (shape: Shape) => void;
@@ -97,7 +102,7 @@ type Props = {
  * events and copy-trade activity, on Lightweight Charts v5. The library's attribution logo stays on (licence).
  */
 export function PriceChart(props: Props) {
-  const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref } = props;
+  const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref, patternText = true } = props;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const main = useRef<ISeriesApi<SeriesType> | null>(null);
@@ -112,6 +117,9 @@ export function PriceChart(props: Props) {
   const live = useRef(props);
   useEffect(() => { live.current = props; });
   const [hover, setHover] = useState<number | null>(null);
+  // hidden signal texts by bar time; the hover box only re-renders when the bar under the mouse changes
+  const tipsAt = useRef(new Map<number, Tip[]>());
+  const [tip, setTip] = useState<{ time: number; x: number; y: number; items: Tip[] } | null>(null);
 
   const display = useMemo(() => (chartType === "heikin" ? heikinAshi(bars) : bars), [bars, chartType]);
   const index = useMemo(() => new TimeIndex(bars.map((b) => b.time), barSeconds), [bars, barSeconds]);
@@ -205,6 +213,19 @@ export function PriceChart(props: Props) {
       // legend follows the crosshair; off the chart it shows the last bar
       const i = p.logical == null || !p.point ? null : Math.round(p.logical);
       setHover(i != null && i >= 0 && i < bs.length ? i : null);
+      // thin bars are hard to hit: take the nearest bar with a hidden text within ~8px of the mouse
+      let at: number | null = null;
+      if (i != null && p.point && tipsAt.current.size) {
+        const spacing = Math.max(1, c.timeScale().options().barSpacing);
+        const reach = Math.min(4, Math.floor(8 / spacing));
+        for (const d of [0, ...Array.from({ length: reach }, (_, k) => [-(k + 1), k + 1]).flat()]) {
+          const b = bs[i + d];
+          if (b && tipsAt.current.has(b.time)) { at = b.time; break; }
+        }
+      }
+      const items = at != null ? tipsAt.current.get(at) : undefined;
+      const pos = p.point;
+      setTip((cur) => (!items || !pos ? null : cur?.time === at ? cur : { time: at!, x: pos.x, y: pos.y, items }));
       if (!t || t === "hline" || !p.point) return;
       const pt = toPt(p.point.x, p.point.y);
       if (pt) o.update({ preview: draft(t, points.current, pt) });
@@ -354,6 +375,14 @@ export function PriceChart(props: Props) {
     while (c.panes().length > 1) c.removePane(c.panes().length - 1);
 
     const allMarkers: SeriesMarker<Time>[] = [];
+    // with "Ẩn chữ" the signal texts come off the markers and wait here for the mouse
+    const tips = new Map<number, Tip[]>();
+    const keepTip = (time: number | null | undefined, text: string | undefined, color: string) => {
+      if (patternText || time == null || !text) return;
+      const list = tips.get(time) ?? [];
+      if (!list.some((x) => x.text === text)) list.push({ text, color });
+      tips.set(time, list);
+    };
     let pane = 0;
     for (const { def, out } of computed) {
       const own = def.overlay ? 0 : ++pane;
@@ -395,16 +424,29 @@ export function PriceChart(props: Props) {
           if (target > 0 && o === def.outputs?.[0] && first) for (const lv of def.levels ?? []) first.createPriceLine({ price: lv, color: theme.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
         }
       }
-      const asMarkers = (list: unknown) => (Array.isArray(list) ? (list as { time: number }[]) : []).map((m) => ({ ...m, time: m.time as UTCTimestamp }) as SeriesMarker<Time>);
+      const asMarkers = (list: unknown) => (Array.isArray(list) ? (list as { time: number; text?: string; color?: string }[]) : [])
+        .map((m) => {
+          keepTip(m.time, m.text, m.color ?? theme.text);
+          return { ...m, time: m.time as UTCTimestamp, ...(patternText ? {} : { text: undefined }) } as SeriesMarker<Time>;
+        });
       if (def.overlay) allMarkers.push(...asMarkers(out.markers));
       // an indicator in its own pane marks that pane, and may mark the price too (priceMarkers)
       else if (first && Array.isArray(out.markers) && out.markers.length) createSeriesMarkers(first, asMarkers(out.markers));
       allMarkers.push(...asMarkers(out.priceMarkers));
     }
-    for (const m of tradeMarkers) {
+    for (const { signal, ...m } of tradeMarkers) {
       const t = index.snap(m.time);
-      if (t != null) allMarkers.push({ ...m, time: t as UTCTimestamp });
+      if (t == null) continue;
+      if (signal) keepTip(t, m.text, m.color);
+      allMarkers.push({ ...m, time: t as UTCTimestamp, ...(signal && !patternText ? { text: undefined } : {}) });
     }
+    // detected chart patterns: name at the bar the label sits on, target at the pattern's end
+    for (const pat of auto.patterns) {
+      const color = pat.bias > 0 ? style.up : pat.bias < 0 ? style.down : theme.text;
+      keepTip(index.snap(pat.label.t), `${pat.name} · ${STATUS_TEXT[pat.status] ?? pat.status}`, color);
+      if (pat.target != null && pat.status !== "expired" && pat.status !== "failed") keepTip(index.snap(pat.end), `Mục tiêu ${fmtNum(pat.target, digits)}`, color);
+    }
+    tipsAt.current = tips;
     // a new indicator pane starts small (a quarter of the price pane)
     for (let i = 1; i < c.panes().length; i++) c.panes()[i].setStretchFactor(heights[i - 1] ?? 0.25);
     markers.current?.setMarkers(allMarkers.sort((a, b) => (a.time as number) - (b.time as number)));
@@ -413,11 +455,11 @@ export function PriceChart(props: Props) {
       c.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 12 });
       fittedFor.current = viewKey;
     }
-  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg, theme]);
+  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg, theme, patternText, auto.patterns, digits]);
 
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);
-  useEffect(() => { overlay.current.update({ auto }); }, [auto]);
+  useEffect(() => { overlay.current.update({ auto, patternText }); }, [auto, patternText]);
 
   // horizontal lines (bell = price alert armed) and open copy-trade positions
   useEffect(() => {
@@ -454,6 +496,12 @@ export function PriceChart(props: Props) {
   return (
     <>
       <div ref={host} className={`absolute inset-0 ${tool ? "cursor-crosshair" : ""}`} />
+      {tip && !patternText && (
+        <div role="tooltip" className="pointer-events-none absolute z-20 grid max-w-64 gap-0.5 rounded border border-border bg-panel/95 px-2 py-1 text-[11px] leading-4 shadow-xl"
+          style={{ left: tip.x + 14, top: Math.max(4, tip.y - 12 - tip.items.length * 16) }}>
+          {tip.items.map((x) => <span key={x.text} style={{ color: x.color }}>{x.text}</span>)}
+        </div>
+      )}
       {bar && (
         <div className={`pointer-events-none absolute left-2 top-1 z-10 max-w-[calc(100%-5rem)] font-mono text-[11px] leading-4 ${style.bg === "light" ? "text-slate-800" : ""}`}>
           <div className="flex flex-wrap gap-x-2">
