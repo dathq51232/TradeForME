@@ -883,6 +883,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             <span>Lệnh copy 14 ngày: {trades.trades.filter((t) => t.kind === "open").length} lệnh mở · {trades.positions.length} vị thế đang mở</span>
           )}
           {info.broker && !data?.source.startsWith("Giá broker") && <span>Khi EA master gửi nến M1, biểu đồ chuyển sang giá broker.</span>}
+          {/* the chart library's licence asks for its notice and a link on the page when the logo is off the chart */}
+          <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer" className="ml-auto text-muted/70 hover:text-foreground">
+            Biểu đồ: TradingView Lightweight Charts™ · © TradingView, Inc.
+          </a>
         </div>
       </section>
     </div>

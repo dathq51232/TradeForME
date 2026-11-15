@@ -5,8 +5,9 @@ This product includes TradingView Lightweight Charts(TM)
 (npm package "lightweight-charts", bundled into the web app),
 Copyright (c) 2026 TradingView, Inc., licensed under the Apache License 2.0
 (node_modules/lightweight-charts/LICENSE). https://www.tradingview.com/
-The chart keeps TradingView's attribution logo (layout.attributionLogo), as that
-licence asks.
+The logo is off the chart itself (layout.attributionLogo: false); instead the chart
+page shows the attribution notice with a link to https://www.tradingview.com/, as
+the library's README asks.
 
 The chart toolbar, drawing tools, legend, icons and wording are this project's own
 work. They do not copy TradingView's code, icons, artwork or layouts, and saved

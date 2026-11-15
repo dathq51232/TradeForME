@@ -60,7 +60,11 @@ async function TopBar() {
       </Badge>
       <NotificationsBell unread={unread ?? 0} telegram={profile?.telegram_chat_id ?? null} />
       <span className="text-sm">{profile?.full_name ?? "bạn"}</span>
-      {profile?.role && profile.role !== "user" && <Badge tone="accent">{profile.role}</Badge>}
+      {profile?.role === "admin" ? (
+        <Link href="/admin" title="Quản lý người dùng" className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-xs text-accent hover:bg-accent/20">
+          ⚙ Quản trị
+        </Link>
+      ) : profile?.role && profile.role !== "user" && <Badge tone="accent">{profile.role}</Badge>}
       <form action="/auth/signout" method="post">
         <button className="text-xs text-muted hover:text-foreground">Đăng xuất</button>
       </form>

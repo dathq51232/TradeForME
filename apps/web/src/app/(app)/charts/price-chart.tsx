@@ -142,7 +142,7 @@ export function PriceChart(props: Props) {
     const c = createChart(host.current, {
       autoSize: true,
       // indicator panes are split off by a separator that can be dragged to resize them
-      layout: { background: { color: C.bg }, textColor: C.text, fontFamily: "var(--font-geist-sans), system-ui", panes: { separatorColor: C.border, separatorHoverColor: "rgba(79,140,255,0.45)", enableResize: true }, attributionLogo: true },
+      layout: { background: { color: C.bg }, textColor: C.text, fontFamily: "var(--font-geist-sans), system-ui", panes: { separatorColor: C.border, separatorHoverColor: "rgba(79,140,255,0.45)", enableResize: true }, attributionLogo: false },
       grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
       rightPriceScale: { borderColor: C.border },
       timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 12 },
