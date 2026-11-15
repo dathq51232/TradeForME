@@ -4,6 +4,7 @@ import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from 
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
+import { PatternAlertsButton } from "./pattern-alerts";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
@@ -692,6 +693,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             <button onClick={() => setOverlays((o) => ({ ...o, events: !o.events }))} title="Tin kinh tế ảnh hưởng mạnh/trung bình"
               className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
           </div>
+          <PatternAlertsButton signedIn={signedIn} symbol={symbol} />
           <div className="relative">
             <button onClick={() => setAutoMenu((m) => !m)} title="Tự nhận diện mô hình giá, mô hình nến, key level và phiên giao dịch"
               className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${AUTO_LAYERS.some((l) => auto[l.key]) ? "border-accent/50 text-accent" : "border-border"}`}>🔍 Tự nhận diện</button>

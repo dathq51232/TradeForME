@@ -450,3 +450,6 @@ verify_jwt = false
 
 [functions.radar-cron]
 verify_jwt = false
+
+[functions.pattern-cron]
+verify_jwt = false
