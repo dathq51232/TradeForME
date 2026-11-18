@@ -6,14 +6,17 @@
 // it returns. Runtime-neutral (Web APIs only) so the Node test suite runs the same code as the Edge Function.
 import { HttpError, json, type Db } from "./ea.ts";
 import { candlestickPatterns, chartPatterns, microWedges } from "./vendor/patterns.js";
-import { SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, YAHOO_NATIVE, parseYahoo, parseBrokerRows, tfSeconds } from "./vendor/market.js";
+import {
+  SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, YAHOO_NATIVE, parseYahoo, parseBrokerRows, tfSeconds,
+  BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures,
+} from "./vendor/market.js";
 import { isIntraday, nativeBase, parseTf, resample } from "./vendor/series.js";
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 export type PatternDeps = { db: Db; fetch: Fetch; telegramToken?: string; now?: () => number };
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 export type PatternEvent = { type: "formed" | "breakout" | "wedge" | "candle"; symbol: string; tf: string; key: string; title: string; body: string };
-type SymbolInfo = { digits: number; binance?: string; yahoo?: string; broker?: boolean };
+type SymbolInfo = { digits: number; binance?: string; futures?: string; yahoo?: string; broker?: boolean };
 
 export const TFS = ["5m", "15m", "1h", "4h", "1D"];
 const TF_LABEL: Record<string, string> = { "5m": "M5", "15m": "M15", "1h": "H1", "4h": "H4", "1D": "D1" };
@@ -30,32 +33,42 @@ async function getJson(f: Fetch, url: string, headers: Record<string, string> = 
   if (!r.ok) throw new Error(`${new URL(url).host} ${r.status}`);
   return r.json();
 }
-const finish = (bars: Bar[], base: string, tf: string) => (base === tf ? bars : (resample(bars, tf) as Bar[])).slice(-BARS);
 
-/** The chart's sources, in the chart's order: broker M1 bars when fresh, then Binance, then Yahoo. */
-export async function getBars(f: Fetch, db: Db, symbol: string, tf: string, now: number): Promise<Bar[]> {
+/** The chart's sources, in the chart's order: broker M1 bars when fresh, then Binance spot, Binance futures
+ * (gold, silver, oil up to H4), then Yahoo. `count` bars at most. */
+export async function getBars(f: Fetch, db: Db, symbol: string, tf: string, now: number, count = BARS): Promise<Bar[]> {
   const info = (SYMBOLS as Record<string, SymbolInfo>)[symbol];
   if (!info) throw new Error(`unknown symbol ${symbol}`);
+  const done = (bars: Bar[], base: string) => (base === tf ? bars : (resample(bars, tf) as Bar[])).slice(-count);
   if (info.broker && isIntraday(tf) && parseTf(tf).seconds <= 14400) {
-    const rows = (await rpc(db, "broker_bars_m1", { p_symbol: symbol, p_limit: Math.min(BARS * (parseTf(tf).seconds / 60), 20000) })) as unknown[] | null;
+    const rows = (await rpc(db, "broker_bars_m1", { p_symbol: symbol, p_limit: Math.min(count * (parseTf(tf).seconds / 60), 20000) })) as unknown[] | null;
     const bars = rows?.length ? (parseBrokerRows(rows) as Bar[]) : [];
-    if (bars.length && now - bars[bars.length - 1].time <= 300) return finish(bars, "1m", tf);
+    if (bars.length && now - bars[bars.length - 1].time <= 300) return done(bars, "1m");
   }
-  if (info.binance) {
+  const binance = async (hosts: string[], path: string, ticker: string, page: number) => {
     const base = nativeBase(tf, BINANCE_NATIVE) as string;
     const ratio = Math.max(1, Math.round(parseTf(tf).seconds / parseTf(base).seconds));
-    for (const host of ["https://data-api.binance.vision", "https://api.binance.com"]) {
+    for (const host of hosts) {
       try {
-        const rows = await getJson(f, `${host}/api/v3/klines?symbol=${info.binance}&interval=${binanceInterval(base)}&limit=${Math.min(1000, BARS * ratio + ratio)}`);
-        return finish(parseBinance(rows) as Bar[], base, tf);
+        const rows = await getJson(f, `${host}${path}?symbol=${ticker}&interval=${binanceInterval(base)}&limit=${Math.min(page, count * ratio + ratio)}`);
+        return done(parseBinance(rows) as Bar[], base);
       } catch { /* next host */ }
     }
+    return null;
+  };
+  if (info.binance) {
+    const b = await binance([BINANCE_SPOT_HOST, "https://api.binance.com"], "/api/v3/klines", info.binance, 1000);
+    if (b) return b;
+  }
+  if (info.futures && usesFutures(info, tf)) {
+    const b = await binance([BINANCE_FUTURES_HOST], "/fapi/v1/klines", info.futures, 1500); // 451 from some regions: Yahoo next
+    if (b) return b;
   }
   if (info.yahoo) {
     const base = nativeBase(tf, Object.keys(YAHOO_NATIVE)) as string;
     const [interval, range] = (YAHOO_NATIVE as Record<string, [string, string]>)[base];
     const j = await getJson(f, `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(info.yahoo)}?interval=${interval}&range=${range}&includePrePost=false`);
-    return finish(parseYahoo(j, !isIntraday(base)) as Bar[], base, tf);
+    return done(parseYahoo(j, !isIntraday(base)) as Bar[], base);
   }
   throw new Error(`no source for ${symbol}`);
 }
@@ -115,6 +128,8 @@ export async function patternCron(req: Request, deps: PatternDeps) {
     }
   }));
   const messages = (events.length ? ((await rpc(deps.db, "pattern_notify", { p_events: events })) ?? []) : []) as { chat_id: string; text: string }[];
+  const out: Record<string, unknown> = { jobs: jobs.length, events: events.length };
+
   let sent = 0;
   if (deps.telegramToken) {
     for (const m of messages) {
@@ -126,5 +141,5 @@ export async function patternCron(req: Request, deps: PatternDeps) {
       } catch { /* the in-app notification is already stored */ }
     }
   }
-  return json(200, { jobs: jobs.length, events: events.length, telegram: messages.length, sent, errors });
+  return json(200, { ...out, telegram: messages.length, sent, errors });
 }

@@ -9,8 +9,10 @@ type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 export type CronDeps = { db: Db; fetch: Fetch; telegramToken?: string };
 
 // Same public sources as the chart (packages/shared/src/market.js); broker M1 bars win inside check_alerts.
-export const PRICE_SOURCES: Record<string, { binance?: string; yahoo?: string }> = {
-  XAUUSD: { yahoo: "GC=F" }, XAGUSD: { yahoo: "SI=F" }, WTI: { yahoo: "CL=F" }, BRENT: { yahoo: "BZ=F" }, DXY: { yahoo: "DX-Y.NYB" },
+// Gold, silver and oil: the Binance TradFi perpetual (realtime) first, Yahoo's delayed futures when fapi is unreachable.
+export const PRICE_SOURCES: Record<string, { binance?: string; futures?: string; yahoo?: string }> = {
+  XAUUSD: { futures: "XAUUSDT", yahoo: "GC=F" }, XAGUSD: { futures: "XAGUSDT", yahoo: "SI=F" },
+  WTI: { futures: "CLUSDT", yahoo: "CL=F" }, BRENT: { futures: "BZUSDT", yahoo: "BZ=F" }, DXY: { yahoo: "DX-Y.NYB" },
   BTCUSD: { binance: "BTCUSDT" }, ETHUSD: { binance: "ETHUSDT" },
 };
 export const CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
@@ -44,13 +46,20 @@ export function parseCalendar(rows: unknown) {
   });
 }
 
-async function lastPrice(f: Fetch, symbol: string): Promise<number | null> {
+export async function lastPrice(f: Fetch, symbol: string): Promise<number | null> {
   const s = PRICE_SOURCES[symbol];
   try {
     if (s?.binance) {
       const r = await f(`https://data-api.binance.vision/api/v3/ticker/price?symbol=${s.binance}`);
       const p = Number((await r.json())?.price);
       return r.ok && p > 0 ? p : null;
+    }
+    if (s?.futures) {
+      try {
+        const r = await f(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${s.futures}`);
+        const p = r.ok ? Number((await r.json())?.price) : NaN;
+        if (p > 0) return p;
+      } catch { /* blocked from this region: Yahoo below */ }
     }
     if (s?.yahoo) {
       const r = await f(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(s.yahoo)}?interval=1m&range=1d`,

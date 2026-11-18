@@ -11,7 +11,7 @@ declare module "@qt/shared/copytrade" {
 declare module "@qt/shared/market" {
   export type SymbolInfo = {
     name: string; group: string; digits: number;
-    yahoo?: string; proxy?: string; broker?: boolean; binance?: string; coinbase?: string;
+    yahoo?: string; proxy?: string; broker?: boolean; binance?: string; coinbase?: string; futures?: string;
   };
   export const SYMBOLS: Record<string, SymbolInfo>;
   export const DEFAULT_WATCHLIST: string[];
@@ -27,6 +27,14 @@ declare module "@qt/shared/market" {
   export function parseYahoo(j: unknown, daily: boolean): Bar[];
   export function parseBrokerRows(rows: { ts: string; o: number | string; h: number | string; l: number | string; c: number | string; v: number | string }[]): Bar[];
   export function quoteFromDaily(bars: Bar[]): { price: number; change: number; changePct: number; time: number } | null;
+  export function quoteFromTicker(j: unknown): { price: number; change: number; changePct: number; time: number } | null;
+  export function tickerStreamUrl(info: SymbolInfo | undefined): string | null;
+  export const BINANCE_SPOT_HOST: string;
+  export const BINANCE_SPOT_STREAM: string;
+  export const BINANCE_FUTURES_HOST: string;
+  export const BINANCE_FUTURES_STREAM: string;
+  export const FUTURES_MAX_TF_SECONDS: number;
+  export function usesFutures(info: SymbolInfo | undefined, tf: string): boolean;
   export function chartSymbol(brokerSymbol: unknown): string | null;
   export function tfSeconds(tf: string): number;
 }

@@ -3,7 +3,7 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, rpcAdapter } from "../../tests/pglite.mjs";
 import { route, type Db } from "./ea.ts";
-import { marketCron, parseCalendar, leadingNumber } from "./market-cron.ts";
+import { marketCron, parseCalendar, leadingNumber, lastPrice } from "./market-cron.ts";
 
 let pg: Awaited<ReturnType<typeof openDb>>;
 let db: Db;
@@ -13,7 +13,9 @@ let price = { BTCUSDT: 100, GC: 2600 };
 const telegram: { chat_id: string; text: string }[] = [];
 let calendarCalls = 0;
 
+// fapi.binance.com answers 451 here, as it does from US regions: gold falls back to Yahoo
 const fakeFetch = async (url: string, init?: RequestInit) => {
+  if (url.includes("fapi.binance")) return new Response("restricted location", { status: 451 });
   if (url.includes("binance")) return Response.json({ price: String(price.BTCUSDT) });
   if (url.includes("yahoo")) return Response.json({ chart: { result: [{ meta: { regularMarketPrice: price.GC } }] } });
   if (url.includes("telegram")) { telegram.push(JSON.parse(String(init?.body))); return Response.json({ ok: true }); }
@@ -90,4 +92,11 @@ test("broker M1 bars win over the public price", async () => {
   const r = await run();
   assert.equal(r.body.alerts.sent, 1);
   assert.match(telegram[telegram.length - 1].text, /XAUUSD xuống dưới 2550 \(giá 2540/);
+});
+
+test("gold, silver and oil prefer the realtime Binance perpetual, Yahoo when it is blocked", async () => {
+  const f = async (url: string) => url.includes("fapi.binance.com/fapi/v1/ticker/price?symbol=XAUUSDT")
+    ? Response.json({ price: "3890.44" }) : Response.json({ chart: { result: [{ meta: { regularMarketPrice: 3882.4 } }] } });
+  assert.equal(await lastPrice(f, "XAUUSD"), 3890.44);
+  assert.equal(await lastPrice(fakeFetch, "XAUUSD"), price.GC);
 });

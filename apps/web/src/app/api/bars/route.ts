@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
     const out = await getBars(symbol, tf, limit);
     const s = cacheSeconds(tf);
     return NextResponse.json(out, {
-      headers: { "Cache-Control": `public, s-maxage=${s}, stale-while-revalidate=${s * 6}` },
+      headers: { "Cache-Control": `public, s-maxage=${s}, stale-while-revalidate=${s * 2}` },
     });
   } catch (e) {
     const err = e as Error & { status?: number };

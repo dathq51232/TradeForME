@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  SYMBOLS, DEFAULT_WATCHLIST, TF_IDS, parseBinance, parseCoinbase, parseYahoo, parseBrokerRows, quoteFromDaily, dedupeBars,
+  SYMBOLS, DEFAULT_WATCHLIST, TF_IDS, parseBinance, parseCoinbase, parseYahoo, parseBrokerRows, quoteFromDaily, dedupeBars, quoteFromTicker, tickerStreamUrl,
 } from "../src/market.js";
 
 test("every symbol has a source and the watchlist only names known symbols", () => {
@@ -48,4 +48,18 @@ test("broker symbols map to chart symbols", async () => {
     "ETHUSD.r": "ETHUSD", USDX: "DXY", XAGUSD: "XAGUSD", EURUSD: null, XAUUSDJPYXX: null, "": null };
   for (const [broker, id] of Object.entries(cases)) assert.equal(chartSymbol(broker), id, broker);
   assert.equal(tfSeconds("4h"), 14400);
+});
+
+test("quoteFromTicker reads both the REST answer and the stream event", () => {
+  const rest = quoteFromTicker({ lastPrice: "95000.5", priceChange: "-500", priceChangePercent: "-0.52", closeTime: 1763000000999 });
+  const ws = quoteFromTicker({ e: "24hrTicker", c: "95000.5", p: "-500", P: "-0.52", E: 1763000000999 });
+  assert.deepEqual(rest, { price: 95000.5, change: -500, changePct: -0.52, time: 1763000000 });
+  assert.deepEqual(ws, rest);
+  assert.equal(quoteFromTicker({ e: "24hrTicker", c: "0" }), null);
+});
+
+test("tickerStreamUrl prefers spot, falls back to the perpetual, none for Yahoo-only symbols", () => {
+  assert.match(tickerStreamUrl(SYMBOLS.BTCUSD), /binance\.vision\/ws\/btcusdt@ticker$/);
+  assert.match(tickerStreamUrl(SYMBOLS.XAUUSD), /fstream\.binance\.com\/market\/ws\/xauusdt@ticker$/);
+  assert.equal(tickerStreamUrl(SYMBOLS.DXY), null);
 });

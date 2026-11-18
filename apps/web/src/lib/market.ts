@@ -1,7 +1,7 @@
 import "server-only";
 import {
   SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, COINBASE_NATIVE, parseCoinbase,
-  YAHOO_NATIVE, parseYahoo, parseBrokerRows,
+  YAHOO_NATIVE, parseYahoo, parseBrokerRows, BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures,
 } from "@qt/shared/market";
 import { nativeBase, parseTf, resample, isIntraday } from "@qt/core/series";
 import { createClient } from "@supabase/supabase-js";
@@ -27,21 +27,24 @@ const finish = (bars: Bar[], base: string, tf: string, limit: number) =>
   (base === tf ? bars : resample(bars, tf)).slice(-limit);
 
 // api.binance.com answers 451 from US cloud regions; the market-data mirror does not.
-const BINANCE_HOSTS = ["https://data-api.binance.vision", "https://api.binance.com"];
+const BINANCE_HOSTS = [BINANCE_SPOT_HOST, "https://api.binance.com"];
 
-async function binance(ticker: string, tf: string, limit: number): Promise<Bar[]> {
+/** Spot klines, or with `futures` the USDⓈ-M perpetual klines (fapi answers 451 from US regions too: the caller falls back). */
+async function binance(ticker: string, tf: string, limit: number, futures = false): Promise<Bar[]> {
   const base = nativeBase(tf, BINANCE_NATIVE);
   if (!base) throw new Error(`Binance: no ${tf}`);
   const ratio = Math.max(1, Math.round(parseTf(tf).seconds / parseTf(base).seconds));
   const want = Math.min(limit * ratio + ratio, 5000);
+  const page = futures ? 1500 : 1000;
+  const path = futures ? "/fapi/v1/klines" : "/api/v3/klines";
   let lastErr: unknown;
-  for (const host of BINANCE_HOSTS) {
+  for (const host of futures ? [BINANCE_FUTURES_HOST] : BINANCE_HOSTS) {
     try {
       let out: Bar[] = [];
       let end: number | null = null;
       while (out.length < want) {
-        const n = Math.min(1000, want - out.length);
-        const rows = await getJson(`${host}/api/v3/klines?symbol=${ticker}&interval=${binanceInterval(base)}&limit=${n}${end ? `&endTime=${end}` : ""}`);
+        const n = Math.min(page, want - out.length);
+        const rows = await getJson(`${host}${path}?symbol=${ticker}&interval=${binanceInterval(base)}&limit=${n}${end ? `&endTime=${end}` : ""}`);
         if (!rows.length) break;
         out = parseBinance(rows).concat(out);
         end = rows[0][0] - 1;
@@ -97,6 +100,14 @@ export async function getBars(symbol: string, tf: string, limit: number): Promis
   if (info.binance) {
     try {
       return { symbol, tf, bars: await binance(info.binance, tf, limit), source: `Binance ${info.binance}`, realtime: true };
+    } catch (e) { errors.push(String((e as Error).message)); }
+  }
+  if (info.futures && usesFutures(info, tf)) {
+    try {
+      return {
+        symbol, tf, bars: await binance(info.futures, tf, limit, true), source: `Binance Futures ${info.futures}`, realtime: true,
+        note: `${info.futures}: hợp đồng vĩnh cửu bám giá giao ngay, có thể lệch vài giá so với broker.`,
+      };
     } catch (e) { errors.push(String((e as Error).message)); }
   }
   if (info.coinbase) {

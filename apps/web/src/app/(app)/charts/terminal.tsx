@@ -1,6 +1,9 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SYMBOLS, TIMEFRAMES, quoteFromDaily, binanceInterval, tfSeconds } from "@qt/shared/market";
+import {
+  SYMBOLS, TIMEFRAMES, quoteFromDaily, quoteFromTicker, tickerStreamUrl, binanceInterval, tfSeconds, parseBinance, usesFutures,
+  BINANCE_SPOT_HOST, BINANCE_SPOT_STREAM, BINANCE_FUTURES_HOST, BINANCE_FUTURES_STREAM,
+} from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
@@ -91,14 +94,69 @@ async function fetchJson<T>(url: string, fallback: T): Promise<T> {
     return r.ok ? ((await r.json()) as T) : fallback;
   } catch { return fallback; }
 }
+/** Perpetual klines straight from Binance in the browser (CORS open): used when the server could not reach fapi
+ * (it answers 451 from US cloud regions) and only had Yahoo's delayed prices. */
+async function fetchFuturesBars(ticker: string, tf: string, limit: number): Promise<BarsResponse | null> {
+  try {
+    const r = await fetch(`${BINANCE_FUTURES_HOST}/fapi/v1/klines?symbol=${ticker}&interval=${binanceInterval(tf)}&limit=${Math.min(limit, 1500)}`);
+    if (!r.ok) return null;
+    const bars = parseBinance(await r.json());
+    return bars.length ? {
+      bars, source: `Binance Futures ${ticker}`, realtime: true,
+      note: `${ticker}: hợp đồng vĩnh cửu bám giá giao ngay, có thể lệch vài giá so với broker.`,
+    } : null;
+  } catch { return null; }
+}
 async function fetchBars(symbol: string, tf: string, limit: number): Promise<BarsResponse> {
+  let res: BarsResponse;
   try {
     const r = await fetch(`/api/bars?symbol=${symbol}&tf=${tf}&limit=${limit}`);
     const j: BarsResponse = await r.json();
-    return r.ok ? j : { bars: [], source: "", realtime: false, error: j.error ?? `HTTP ${r.status}` };
+    res = r.ok ? j : { bars: [], source: "", realtime: false, error: j.error ?? `HTTP ${r.status}` };
   } catch (e) {
-    return { bars: [], source: "", realtime: false, error: (e as Error).message };
+    res = { bars: [], source: "", realtime: false, error: (e as Error).message };
   }
+  const info = SYMBOLS[symbol];
+  if (!res.realtime && info?.futures && usesFutures(info, tf)) return (await fetchFuturesBars(info.futures, tf, limit)) ?? res;
+  return res;
+}
+/** Websocket for the live candle: Binance spot or futures, whichever the bars came from; null = poll the API. */
+function streamUrl(source: string | undefined, tf: string) {
+  const m = /^Binance (Futures )?([A-Z0-9]+)/.exec(source ?? "");
+  if (!m) return null;
+  return `${m[1] ? BINANCE_FUTURES_STREAM : BINANCE_SPOT_STREAM}${m[2].toLowerCase()}@kline_${binanceInterval(tf)}`;
+}
+/**
+ * A websocket that comes back by itself: Binance drops connections after 24 h and on network blips. Reconnects with
+ * a growing delay (1 s up to 30 s), also when no message came for `staleMs` (a socket that is open but silent).
+ * Returns the close function.
+ */
+function liveSocket(url: string, onMessage: (data: unknown) => void, staleMs = 60_000) {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let delay = 1000;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let lastMsg = Date.now();
+  const open = () => {
+    if (closed) return;
+    lastMsg = Date.now();
+    ws = new WebSocket(url);
+    ws.onmessage = (ev) => {
+      lastMsg = Date.now();
+      delay = 1000;
+      try { onMessage(JSON.parse(ev.data)); } catch { /* not JSON: ignore */ }
+    };
+    ws.onclose = () => {
+      if (closed) return;
+      retry = setTimeout(open, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+  };
+  const watchdog = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsg > staleMs) ws.close();
+  }, 10_000);
+  open();
+  return () => { closed = true; clearTimeout(retry); clearInterval(watchdog); ws?.close(); };
 }
 const paramText = (ind: ActiveIndicator) =>
   Object.entries(ind.params).filter(([, v]) => typeof v === "number").map(([, v]) => v).join(", ");
@@ -185,20 +243,24 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
 
   useEffect(() => load(), [load]);
 
-  // Crypto: Binance kline stream in the browser (no server cost). Others: poll the cached API.
+  // Binance spot (crypto) and futures (gold, silver, oil intraday): kline stream in the browser, no server cost.
+  // Others (broker bars, Yahoo): poll the cached API; broker bars arrive every minute, so a little faster.
+  const stream = streamUrl(data?.source, tf);
+  const step = tfSeconds(tf);
+  const pollMs = data?.source.startsWith("Giá broker") ? 10_000 : 30_000;
   useEffect(() => {
-    if (!data?.source.startsWith("Binance") || !info.binance) {
+    if (!stream) {
       let cancel = () => {};
-      const t = setInterval(() => { cancel = load(true); }, 30_000);
+      const t = setInterval(() => { cancel = load(true); }, pollMs);
       return () => { clearInterval(t); cancel(); };
     }
-    const ws = new WebSocket(`wss://data-stream.binance.vision/ws/${info.binance.toLowerCase()}@kline_${binanceInterval(tf)}`);
     let pending: Bar | null = null;
-    ws.onmessage = (ev) => {
-      const k = JSON.parse(ev.data).k;
+    let reloadedAt = 0;
+    const close = liveSocket(stream, (msg) => {
+      const k = (msg as { k?: { t: number; o: string; h: string; l: string; c: string; v: string } }).k;
       if (k) pending = { time: k.t / 1000, open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v };
-    };
-    // apply at most once a second: indicators are recomputed on every update
+    });
+    // apply at most twice a second: indicators are recomputed on every update
     const t = setInterval(() => {
       if (!pending) return;
       const bar = pending; pending = null;
@@ -206,13 +268,19 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         if (!d || !d.bars.length) return d;
         const last = d.bars[d.bars.length - 1];
         if (bar.time < last.time) return d;
+        // candles missed while the socket was down: fetch the bars again instead of leaving a hole
+        if (bar.time > last.time + step) {
+          if (Date.now() - reloadedAt > 30_000) { reloadedAt = Date.now(); cancelLoad = load(true); }
+          return d;
+        }
         const bars = bar.time === last.time ? [...d.bars.slice(0, -1), bar] : [...d.bars.slice(1), bar];
         return { ...d, bars };
       });
       setUpdatedAt(Date.now());
-    }, 1000);
-    return () => { clearInterval(t); ws.close(); };
-  }, [data?.source, info.binance, tf, load]);
+    }, 500);
+    let cancelLoad = () => {};
+    return () => { clearInterval(t); close(); cancelLoad(); };
+  }, [stream, pollMs, load, step]);
 
   // ---------- copy-trade activity and economic calendar for this symbol ----------
   useEffect(() => {
@@ -238,18 +306,54 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   }, []);
 
   // ---------- watchlist quotes ----------
+  // Binance-priced symbols: the 24h ticker streamed from Binance (live). The rest: the daily bars API every minute.
   useEffect(() => {
     let alive = true;
-    const run = () => Promise.all(watchlist.map(async (s) => {
+    const ticker = async (s: string) => {
+      const i = SYMBOLS[s];
+      const url = i?.binance ? `${BINANCE_SPOT_HOST}/api/v3/ticker/24hr?symbol=${i.binance}`
+        : i?.futures ? `${BINANCE_FUTURES_HOST}/fapi/v1/ticker/24hr?symbol=${i.futures}` : null;
+      if (!url) return null;
+      try {
+        const r = await fetch(url);
+        return r.ok ? quoteFromTicker(await r.json()) : null;
+      } catch { return null; }
+    };
+    const daily = async (s: string) => {
       try {
         const r = await fetch(`/api/bars?symbol=${s}&tf=1D&limit=2`);
         const j: BarsResponse = await r.json();
-        return [s, r.ok ? quoteFromDaily(j.bars) : null] as const;
-      } catch { return [s, null] as const; }
-    })).then((rows) => { if (alive) setQuotes(Object.fromEntries(rows)); });
-    run();
-    const t = setInterval(run, 60_000);
-    return () => { alive = false; clearInterval(t); };
+        return r.ok ? quoteFromDaily(j.bars) : null;
+      } catch { return null; }
+    };
+    const live = watchlist.filter((s) => SYMBOLS[s]?.binance || SYMBOLS[s]?.futures);
+    const merge = (rows: (readonly [string, ReturnType<typeof quoteFromDaily>])[]) => {
+      if (alive) setQuotes((q) => ({ ...q, ...Object.fromEntries(rows.filter(([, v]) => v)) }));
+    };
+    // Live symbols: one REST call for a first price, then the `@ticker` stream (one event a second). A symbol whose
+    // stream says nothing for 15 s (Binance blocked here) is polled again, and falls back to the daily bars.
+    const heard: Record<string, number> = {};
+    const pending: Record<string, ReturnType<typeof quoteFromDaily>> = {};
+    const closers = live.map((s) => liveSocket(tickerStreamUrl(SYMBOLS[s])!, (msg) => {
+      const q = quoteFromTicker(msg);
+      if (q) { pending[s] = q; heard[s] = Date.now(); }
+    }));
+    const flush = setInterval(() => {
+      const rows = Object.entries(pending);
+      if (!rows.length) return;
+      for (const [s] of rows) delete pending[s];
+      merge(rows);
+    }, 1000);
+    const runLive = (only?: string[]) =>
+      Promise.all((only ?? live).map(async (s) => [s, (await ticker(s)) ?? (await daily(s))] as const)).then(merge);
+    const runDaily = () => Promise.all(watchlist.filter((s) => !live.includes(s)).map(async (s) => [s, await daily(s)] as const)).then(merge);
+    runLive(); runDaily();
+    const t1 = setInterval(() => {
+      const silent = live.filter((s) => Date.now() - (heard[s] ?? 0) > 15_000);
+      if (silent.length) runLive(silent);
+    }, 15_000);
+    const t2 = setInterval(runDaily, 60_000);
+    return () => { alive = false; closers.forEach((c) => c()); clearInterval(flush); clearInterval(t1); clearInterval(t2); };
   }, [watchlist]);
 
   // ---------- persistence (signed-in users; RLS keeps rows per user) ----------
@@ -455,7 +559,6 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
 
   // ---------- automatic chart reading (all in the browser, on the loaded bars) ----------
   const rawBars = data?.bars;
-  const step = tfSeconds(tf);
   const found = useMemo(() => {
     const bs = rawBars ?? [];
     const periodLen = { day: 86400, week: 7 * 86400, month: 28 * 86400 };
@@ -901,7 +1004,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           {overlays.trades && signedIn && (trades.trades.length > 0 || trades.positions.length > 0) && (
             <span>Lệnh copy 14 ngày: {trades.trades.filter((t) => t.kind === "open").length} lệnh mở · {trades.positions.length} vị thế đang mở</span>
           )}
-          {info.broker && !data?.source.startsWith("Giá broker") && <span>Khi EA master gửi nến M1, biểu đồ chuyển sang giá broker.</span>}
+          {info.broker && !data?.source.startsWith("Giá broker") && <span>Khi EA master gửi nến M1, biểu đồ chuyển sang giá broker (khớp giá MT5 nhất).</span>}
+          {info.futures && !data?.realtime && !usesFutures(info, tf) && <span>Khung H4 trở xuống có giá realtime (Binance Futures {info.futures}).</span>}
           {/* the chart library's licence asks for its notice and a link on the page when the logo is off the chart */}
           <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer" className="ml-auto text-muted/70 hover:text-foreground">
             Biểu đồ: TradingView Lightweight Charts™ · © TradingView, Inc.
