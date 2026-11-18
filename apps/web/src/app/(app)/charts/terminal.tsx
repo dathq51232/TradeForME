@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  SYMBOLS, TIMEFRAMES, quoteFromDaily, quoteFromTicker, tickerStreamUrl, binanceInterval, tfSeconds, parseBinance, usesFutures,
+  SYMBOLS, TIMEFRAMES, quoteFromDaily, quoteFromTicker, tickerStreamUrl, spotUsdFactor, scaleBars, fetchSpotUsdFactor, USD_PROXY_TICKER, binanceInterval, tfSeconds, parseBinance, usesFutures,
   BINANCE_SPOT_HOST, BINANCE_SPOT_STREAM, BINANCE_FUTURES_HOST, BINANCE_FUTURES_STREAM,
 } from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
@@ -28,7 +28,7 @@ type Initial = {
   drawings: Record<string, SymbolDrawings>;
   alerts: PriceAlert[];
 };
-type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; note?: string; error?: string };
+type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; factor?: number; note?: string; error?: string };
 
 const NO_INDICATORS: ActiveIndicator[] = [];
 // Indicators that need anchors or draw boxes/profiles are left out of the menu.
@@ -101,10 +101,12 @@ async function fetchFuturesBars(ticker: string, tf: string, limit: number): Prom
   try {
     const r = await fetch(`${BINANCE_FUTURES_HOST}/fapi/v1/klines?symbol=${ticker}&interval=${binanceInterval(tf)}&limit=${Math.min(limit, 1500)}`);
     if (!r.ok) return null;
-    const bars = parseBinance(await r.json());
+    const [bars, factor] = await Promise.all([parseBinance(await r.json()), fetchSpotUsdFactor(fetch, ticker)]);
     return bars.length ? {
-      bars, source: `Binance Futures ${ticker}`, realtime: true,
-      note: `${ticker}: hợp đồng vĩnh cửu bám giá giao ngay, có thể lệch vài giá so với broker.`,
+      bars: scaleBars(bars, factor), source: `Binance Futures ${ticker}`, realtime: true, factor: factor ?? 1,
+      note: factor
+        ? `${ticker} quy đổi về USD giao ngay (bỏ chênh hợp đồng vĩnh cửu và tỷ giá USDT): còn lệch broker khoảng spread.`
+        : `${ticker}: giá USDT của hợp đồng vĩnh cửu, chưa quy đổi được về USD: có thể lệch broker vài giá.`,
     } : null;
   } catch { return null; }
 }
@@ -158,6 +160,31 @@ function liveSocket(url: string, onMessage: (data: unknown) => void, staleMs = 6
   }, 10_000);
   open();
   return () => { closed = true; clearTimeout(retry); clearInterval(watchdog); ws?.close(); };
+}
+/**
+ * Live perpetual -> spot USD multipliers (see spotUsdFactor) for the given futures tickers, kept in `out`:
+ * a REST snapshot first, then each perpetual's `@markPrice@1s` stream (mark p, index i) and USDC/USDT's ticker.
+ * Returns the close function.
+ */
+function liveSpotUsdFactors(tickers: string[], out: Record<string, number>) {
+  if (!tickers.length) return () => {};
+  const mark: Record<string, { p: number; i: number }> = {};
+  let usd = 0;
+  const update = (t: string) => {
+    const m = mark[t];
+    const f = m && usd ? spotUsdFactor(m.p, m.i, usd) : null;
+    if (f) out[t] = f;
+  };
+  tickers.forEach((t) => fetchSpotUsdFactor(fetch, t).then((f) => { if (f && !mark[t]) out[t] = f; }));
+  const closers = tickers.map((t) => liveSocket(`${BINANCE_FUTURES_STREAM}${t.toLowerCase()}@markPrice@1s`, (msg) => {
+    const m = msg as { p?: string; i?: string };
+    if (Number(m.p) > 0 && Number(m.i) > 0) { mark[t] = { p: +m.p!, i: +m.i! }; update(t); }
+  }));
+  closers.push(liveSocket(`${BINANCE_SPOT_STREAM}${USD_PROXY_TICKER.toLowerCase()}@ticker`, (msg) => {
+    const c = Number((msg as { c?: string }).c);
+    if (c > 0) { usd = c; tickers.forEach(update); }
+  }));
+  return () => closers.forEach((c) => c());
 }
 const paramText = (ind: ActiveIndicator) =>
   Object.entries(ind.params).filter(([, v]) => typeof v === "number").map(([, v]) => v).join(", ");
@@ -248,6 +275,12 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   // Others (broker bars, Yahoo): poll the cached API; broker bars arrive every minute, so a little faster.
   const stream = streamUrl(data?.source, tf);
   const step = tfSeconds(tf);
+  // gold, silver, oil from the USDT perpetual: shown in spot USD like MT5's XAUUSD (liveSpotUsdFactors)
+  const usdFactors = useRef<Record<string, number>>({});
+  const futTickers = [...new Set([...watchlist, symbol].filter((s) => SYMBOLS[s]?.futures && !SYMBOLS[s]?.binance).map((s) => SYMBOLS[s].futures!))].sort().join(",");
+  useEffect(() => liveSpotUsdFactors(futTickers ? futTickers.split(",") : [], usdFactors.current), [futTickers]);
+  const streamFut = /^Binance Futures ([A-Z0-9]+)/.exec(data?.source ?? "")?.[1];
+  const streamFactor = data?.factor;
   const pollMs = data?.source.startsWith("Giá broker") ? 10_000 : 30_000;
   useEffect(() => {
     if (!stream) {
@@ -259,7 +292,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     let reloadedAt = 0;
     const close = liveSocket(stream, (msg) => {
       const k = (msg as { k?: { t: number; o: string; h: string; l: string; c: string; v: string } }).k;
-      if (k) pending = { time: k.t / 1000, open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v };
+      if (!k) return;
+      const f = (streamFut && usdFactors.current[streamFut]) || streamFactor || 1;
+      pending = { time: k.t / 1000, open: +k.o * f, high: +k.h * f, low: +k.l * f, close: +k.c * f, volume: +k.v };
     });
     // apply at most twice a second: indicators are recomputed on every update
     const t = setInterval(() => {
@@ -281,7 +316,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     }, 500);
     let cancelLoad = () => {};
     return () => { clearInterval(t); close(); cancelLoad(); };
-  }, [stream, pollMs, load, step]);
+  }, [stream, pollMs, load, step, streamFut, streamFactor]);
 
   // ---------- copy-trade activity and economic calendar for this symbol ----------
   useEffect(() => {
@@ -310,6 +345,13 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   // Binance-priced symbols: the 24h ticker streamed from Binance (live). The rest: the daily bars API every minute.
   useEffect(() => {
     let alive = true;
+    // a perpetual's USDT quote in spot USD, like the chart (24h change scaled the same way; % unchanged)
+    const factors = usdFactors.current;
+    const toUsd = (s: string, q: ReturnType<typeof quoteFromTicker>) => {
+      const i = SYMBOLS[s];
+      const f = !i?.binance && i?.futures ? factors[i.futures] : undefined;
+      return q && f ? { ...q, price: q.price * f, change: q.change * f } : q;
+    };
     const ticker = async (s: string) => {
       const i = SYMBOLS[s];
       const url = i?.binance ? `${BINANCE_SPOT_HOST}/api/v3/ticker/24hr?symbol=${i.binance}`
@@ -317,7 +359,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       if (!url) return null;
       try {
         const r = await fetch(url);
-        return r.ok ? quoteFromTicker(await r.json()) : null;
+        return r.ok ? toUsd(s, quoteFromTicker(await r.json())) : null;
       } catch { return null; }
     };
     const daily = async (s: string) => {
@@ -336,7 +378,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     const heard: Record<string, number> = {};
     const pending: Record<string, ReturnType<typeof quoteFromDaily>> = {};
     const closers = live.map((s) => liveSocket(tickerStreamUrl(SYMBOLS[s])!, (msg) => {
-      const q = quoteFromTicker(msg);
+      const q = toUsd(s, quoteFromTicker(msg));
       if (q) { pending[s] = q; heard[s] = Date.now(); }
     }));
     const flush = setInterval(() => {

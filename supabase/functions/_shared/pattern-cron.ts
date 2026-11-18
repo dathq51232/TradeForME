@@ -10,7 +10,7 @@ import { trendRun, TREND_BARS } from "./trend-cron.ts";
 import { candlestickPatterns, chartPatterns, microWedges } from "./vendor/patterns.js";
 import {
   SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, YAHOO_NATIVE, parseYahoo, parseBrokerRows, tfSeconds,
-  BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures,
+  BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures, scaleBars, fetchSpotUsdFactor,
 } from "./vendor/market.js";
 import { isIntraday, nativeBase, parseTf, resample } from "./vendor/series.js";
 
@@ -63,8 +63,12 @@ export async function getBars(f: Fetch, db: Db, symbol: string, tf: string, now:
     if (b) return b;
   }
   if (info.futures && usesFutures(info, tf)) {
-    const b = await binance([BINANCE_FUTURES_HOST], "/fapi/v1/klines", info.futures, 1500); // 451 from some regions: Yahoo next
-    if (b) return b;
+    // 451 from some regions: Yahoo next. In spot USD like the chart, so patterns sit at the prices users see.
+    const [b, factor] = await Promise.all([
+      binance([BINANCE_FUTURES_HOST], "/fapi/v1/klines", info.futures, 1500),
+      fetchSpotUsdFactor(f, info.futures),
+    ]);
+    if (b) return scaleBars(b, factor) as Bar[];
   }
   if (info.yahoo) {
     const base = nativeBase(tf, Object.keys(YAHOO_NATIVE)) as string;

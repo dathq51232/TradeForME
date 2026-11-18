@@ -4,12 +4,14 @@
 //  2. Economic calendar: every 30 minutes, copy the weekly public calendar into econ_events.
 // Runtime-neutral (Web APIs only) so the Node test suite runs the same code as the Edge Function.
 import { HttpError, json, type Db } from "./ea.ts";
+import { fetchSpotUsdFactor } from "./vendor/market.js";
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 export type CronDeps = { db: Db; fetch: Fetch; telegramToken?: string };
 
 // Same public sources as the chart (packages/shared/src/market.js); broker M1 bars win inside check_alerts.
-// Gold, silver and oil: the Binance TradFi perpetual (realtime) first, Yahoo's delayed futures when fapi is unreachable.
+// Gold, silver and oil: the Binance TradFi perpetual (realtime) first, converted from USDT to spot USD like the chart
+// (fetchSpotUsdFactor), Yahoo's delayed futures when fapi is unreachable.
 export const PRICE_SOURCES: Record<string, { binance?: string; futures?: string; yahoo?: string }> = {
   XAUUSD: { futures: "XAUUSDT", yahoo: "GC=F" }, XAGUSD: { futures: "XAGUSDT", yahoo: "SI=F" },
   WTI: { futures: "CLUSDT", yahoo: "CL=F" }, BRENT: { futures: "BZUSDT", yahoo: "BZ=F" }, DXY: { yahoo: "DX-Y.NYB" },
@@ -56,9 +58,12 @@ export async function lastPrice(f: Fetch, symbol: string): Promise<number | null
     }
     if (s?.futures) {
       try {
-        const r = await f(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${s.futures}`);
+        const [r, factor] = await Promise.all([
+          f(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${s.futures}`),
+          fetchSpotUsdFactor(f, s.futures),
+        ]);
         const p = r.ok ? Number((await r.json())?.price) : NaN;
-        if (p > 0) return p;
+        if (p > 0) return factor ? p * factor : p;
       } catch { /* blocked from this region: Yahoo below */ }
     }
     if (s?.yahoo) {

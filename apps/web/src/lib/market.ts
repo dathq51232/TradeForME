@@ -1,7 +1,7 @@
 import "server-only";
 import {
   SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, COINBASE_NATIVE, parseCoinbase,
-  YAHOO_NATIVE, parseYahoo, parseBrokerRows, BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures,
+  YAHOO_NATIVE, parseYahoo, parseBrokerRows, BINANCE_SPOT_HOST, BINANCE_FUTURES_HOST, usesFutures, scaleBars, fetchSpotUsdFactor,
 } from "@qt/shared/market";
 import { nativeBase, parseTf, resample, isIntraday } from "@qt/core/series";
 import { createClient } from "@supabase/supabase-js";
@@ -12,6 +12,7 @@ export type BarsResult = {
   symbol: string; tf: string; bars: Bar[];
   source: string;          // shown under the chart
   realtime: boolean;       // false = delayed or proxy data; never labelled LIVE (design §5.2)
+  factor?: number;         // Binance perpetual -> spot USD multiplier applied to the bars (the live stream applies it too)
   note?: string;
 };
 
@@ -104,9 +105,15 @@ export async function getBars(symbol: string, tf: string, limit: number): Promis
   }
   if (info.futures && usesFutures(info, tf)) {
     try {
+      const [raw, factor] = await Promise.all([
+        binance(info.futures, tf, limit, true),
+        fetchSpotUsdFactor((u) => fetch(u, { headers: UA, signal: AbortSignal.timeout(5000), cache: "no-store" }), info.futures),
+      ]);
       return {
-        symbol, tf, bars: await binance(info.futures, tf, limit, true), source: `Binance Futures ${info.futures}`, realtime: true,
-        note: `${info.futures}: hợp đồng vĩnh cửu bám giá giao ngay, có thể lệch vài giá so với broker.`,
+        symbol, tf, bars: scaleBars(raw, factor), source: `Binance Futures ${info.futures}`, realtime: true, factor: factor ?? 1,
+        note: factor
+          ? `${info.futures} quy đổi về USD giao ngay (bỏ chênh hợp đồng vĩnh cửu và tỷ giá USDT): còn lệch broker khoảng spread.`
+          : `${info.futures}: giá USDT của hợp đồng vĩnh cửu, chưa quy đổi được về USD: có thể lệch broker vài giá.`,
       };
     } catch (e) { errors.push(String((e as Error).message)); }
   }

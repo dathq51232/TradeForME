@@ -54,6 +54,35 @@ export const BINANCE_FUTURES_HOST = "https://fapi.binance.com";
 export const BINANCE_FUTURES_STREAM = "wss://fstream.binance.com/market/ws/";
 export const FUTURES_MAX_TF_SECONDS = 14400;
 
+// ---------- perpetual in USDT -> spot in USD, the way an MT5 broker quotes XAUUSD ----------
+// A perpetual trades a little above or below its spot index (index/mark strips that premium), and in USDT, which
+// is not exactly a dollar: USDC/USDT stands in for USD/USDT (USDC is held at one dollar). Gold at 3,760: about
+// 2.5 of premium plus 3.5 of USDT. What is left against a broker is its own quote and spread (MT5 charts the bid).
+export const USD_PROXY_TICKER = "USDCUSDT";
+
+/** Multiplier from the perpetual's price to spot USD; null when an input is missing or out of range. */
+export function spotUsdFactor(mark, index, usdcUsdt) {
+  const f = Number(index) / Number(mark) / Number(usdcUsdt);
+  return Number.isFinite(f) && f > 0.95 && f < 1.05 ? f : null;
+}
+
+/** Bars with open/high/low/close times the factor (volume unchanged). */
+export const scaleBars = (bars, f) =>
+  !f || f === 1 ? bars : bars.map((b) => ({ ...b, open: b.open * f, high: b.high * f, low: b.low * f, close: b.close * f }));
+
+/** Current factor for a perpetual from Binance's REST API, through the caller's fetch; null when unreachable. */
+export async function fetchSpotUsdFactor(fetchFn, ticker) {
+  try {
+    const [p, u] = await Promise.all([
+      fetchFn(`${BINANCE_FUTURES_HOST}/fapi/v1/premiumIndex?symbol=${ticker}`).then((r) => (r.ok ? r.json() : null)),
+      fetchFn(`${BINANCE_SPOT_HOST}/api/v3/ticker/price?symbol=${USD_PROXY_TICKER}`).then((r) => (r.ok ? r.json() : null)),
+    ]);
+    return spotUsdFactor(p?.markPrice, p?.indexPrice, u?.price);
+  } catch {
+    return null;
+  }
+}
+
 /** True when the perpetual is the source for this symbol and timeframe (intraday up to 4h). */
 export const usesFutures = (info, tf) => Boolean(info?.futures) && tfSeconds(tf) <= FUTURES_MAX_TF_SECONDS;
 

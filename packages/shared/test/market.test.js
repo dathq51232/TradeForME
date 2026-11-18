@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  SYMBOLS, DEFAULT_WATCHLIST, TF_IDS, parseBinance, parseCoinbase, parseYahoo, parseBrokerRows, quoteFromDaily, dedupeBars, quoteFromTicker, tickerStreamUrl,
+  SYMBOLS, DEFAULT_WATCHLIST, TF_IDS, parseBinance, parseCoinbase, parseYahoo, parseBrokerRows, quoteFromDaily, dedupeBars, quoteFromTicker, tickerStreamUrl, spotUsdFactor, scaleBars, fetchSpotUsdFactor,
 } from "../src/market.js";
 
 test("every symbol has a source and the watchlist only names known symbols", () => {
@@ -62,4 +62,21 @@ test("tickerStreamUrl prefers spot, falls back to the perpetual, none for Yahoo-
   assert.match(tickerStreamUrl(SYMBOLS.BTCUSD), /binance\.vision\/ws\/btcusdt@ticker$/);
   assert.match(tickerStreamUrl(SYMBOLS.XAUUSD), /fstream\.binance\.com\/market\/ws\/xauusdt@ticker$/);
   assert.equal(tickerStreamUrl(SYMBOLS.DXY), null);
+});
+
+test("spotUsdFactor strips the perpetual premium and the USDT rate", () => {
+  // live sample: XAUUSDT mark 3761.74, index 3759.10, USDC/USDT 1.00092 -> about 3755.64 USD
+  const f = spotUsdFactor("3761.74003751", "3759.09520309", "1.00092");
+  assert.ok(Math.abs(3761.74003751 * f - 3755.64) < 0.01);
+  assert.equal(spotUsdFactor(undefined, "1", "1"), null);
+  assert.equal(spotUsdFactor("100", "50", "1"), null);
+  const [b] = scaleBars([{ time: 1, open: 10, high: 20, low: 5, close: 15, volume: 7 }], 0.5);
+  assert.deepEqual(b, { time: 1, open: 5, high: 10, low: 2.5, close: 7.5, volume: 7 });
+});
+
+test("fetchSpotUsdFactor reads premiumIndex and USDCUSDT, null when a call fails", async () => {
+  const ok = async (url) => ({ ok: true, json: async () => (url.includes("premiumIndex") ? { markPrice: "101", indexPrice: "100" } : { price: "1" }) });
+  assert.ok(Math.abs((await fetchSpotUsdFactor(ok, "XAUUSDT")) - 100 / 101) < 1e-12);
+  assert.equal(await fetchSpotUsdFactor(async () => ({ ok: false }), "XAUUSDT"), null);
+  assert.equal(await fetchSpotUsdFactor(async () => { throw new Error("451"); }, "XAUUSDT"), null);
 });

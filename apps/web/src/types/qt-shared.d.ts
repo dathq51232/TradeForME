@@ -29,6 +29,10 @@ declare module "@qt/shared/market" {
   export function quoteFromDaily(bars: Bar[]): { price: number; change: number; changePct: number; time: number } | null;
   export function quoteFromTicker(j: unknown): { price: number; change: number; changePct: number; time: number } | null;
   export function tickerStreamUrl(info: SymbolInfo | undefined): string | null;
+  export const USD_PROXY_TICKER: string;
+  export function spotUsdFactor(mark: unknown, index: unknown, usdcUsdt: unknown): number | null;
+  export function scaleBars<B extends Bar>(bars: B[], f: number | null | undefined): B[];
+  export function fetchSpotUsdFactor(fetchFn: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>, ticker: string): Promise<number | null>;
   export const BINANCE_SPOT_HOST: string;
   export const BINANCE_SPOT_STREAM: string;
   export const BINANCE_FUTURES_HOST: string;

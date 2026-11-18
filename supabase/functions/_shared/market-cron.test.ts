@@ -97,6 +97,12 @@ test("broker M1 bars win over the public price", async () => {
 test("gold, silver and oil prefer the realtime Binance perpetual, Yahoo when it is blocked", async () => {
   const f = async (url: string) => url.includes("fapi.binance.com/fapi/v1/ticker/price?symbol=XAUUSDT")
     ? Response.json({ price: "3890.44" }) : Response.json({ chart: { result: [{ meta: { regularMarketPrice: 3882.4 } }] } });
-  assert.equal(await lastPrice(f, "XAUUSD"), 3890.44);
+  assert.equal(await lastPrice(f, "XAUUSD"), 3890.44); // conversion data missing: the USDT price as it is
   assert.equal(await lastPrice(fakeFetch, "XAUUSD"), price.GC);
+  // with the premium index and USDC/USDT, the perpetual's USDT price becomes spot USD (index / USDC-USDT)
+  const g = async (url: string) =>
+    url.includes("/fapi/v1/ticker/price") ? Response.json({ price: "3761.74" })
+    : url.includes("/premiumIndex") ? Response.json({ markPrice: "3761.74", indexPrice: "3759.10" })
+    : url.includes("USDCUSDT") ? Response.json({ price: "1.00092" }) : new Response("", { status: 404 });
+  assert.ok(Math.abs((await lastPrice(g, "XAUUSD"))! - 3759.10 / 1.00092) < 1e-9);
 });
