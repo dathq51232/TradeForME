@@ -13,7 +13,8 @@
     "./seasonals": "./src/seasonals.js",
     "./volume-profile": "./src/volume-profile.js",
     "./patterns": "./src/patterns.js",
-    "./rsi-tools": "./src/rsi-tools.js"
+    "./rsi-tools": "./src/rsi-tools.js",
+    "./trend": "./src/trend.js"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

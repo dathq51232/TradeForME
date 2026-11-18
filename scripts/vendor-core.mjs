@@ -15,6 +15,7 @@ const FILES = [
   ["packages/core/src/rsi-tools.js", "rsi-tools.js"],
   ["packages/core/src/indicators.js", "indicators.js"],
   ["packages/core/src/patterns.js", "patterns.js"],
+  ["packages/core/src/trend.js", "trend.js"],
   ["packages/shared/src/market.js", "market.js"],
 ];
 const header = (src) => `// GENERATED from ${src} by scripts/vendor-core.mjs. Do not edit: change the source and run the script.\n`;

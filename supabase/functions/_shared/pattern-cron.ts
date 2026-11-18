@@ -3,8 +3,10 @@
 // bars with the chart's own pattern recognition (vendor/patterns.js, the same code as the web app), turn what just
 // happened into events (pattern formed, pattern breakout, small wedge ready / broken, candlestick pattern on the
 // candle that closed), and let pattern_notify() deliver each to its followers once; then send the Telegram messages
-// it returns. Runtime-neutral (Web APIs only) so the Node test suite runs the same code as the Edge Function.
+// it returns. Right after the daily close it also runs the long-term trend alerts (trend-cron.ts).
+// Runtime-neutral (Web APIs only) so the Node test suite runs the same code as the Edge Function.
 import { HttpError, json, type Db } from "./ea.ts";
+import { trendRun, TREND_BARS } from "./trend-cron.ts";
 import { candlestickPatterns, chartPatterns, microWedges } from "./vendor/patterns.js";
 import {
   SYMBOLS, BINANCE_NATIVE, binanceInterval, parseBinance, YAHOO_NATIVE, parseYahoo, parseBrokerRows, tfSeconds,
@@ -129,6 +131,14 @@ export async function patternCron(req: Request, deps: PatternDeps) {
   }));
   const messages = (events.length ? ((await rpc(deps.db, "pattern_notify", { p_events: events })) ?? []) : []) as { chat_id: string; text: string }[];
   const out: Record<string, unknown> = { jobs: jobs.length, events: events.length };
+
+  // long-term trend, once the daily candle has closed
+  if (justClosed("1D", now)) {
+    const t = await trendRun(deps.db, (s) => getBars(deps.fetch, deps.db, s, "1D", now, TREND_BARS), now);
+    messages.push(...t.messages);
+    errors.push(...t.errors);
+    out.trend = { symbols: t.symbols, events: t.events, telegram: t.messages.length };
+  }
 
   let sent = 0;
   if (deps.telegramToken) {

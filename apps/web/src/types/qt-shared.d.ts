@@ -39,6 +39,19 @@ declare module "@qt/shared/market" {
   export function tfSeconds(tf: string): number;
 }
 
+declare module "@qt/core/trend" {
+  export type TrendState = "up" | "down" | "side";
+  export const FAST: number;
+  export const SLOW: number;
+  export const TREND_LABEL: Record<TrendState, string>;
+  export type TrendSummary = {
+    state: TrendState; label: string; since: number; bars: number; close: number; emaFast: number; emaSlow: number;
+    distPct: number; slopePct: number | null; high52: number; low52: number; time: number;
+  };
+  export function trendSummary(bars: Bar[], fast?: number, slow?: number): TrendSummary | null;
+  export function trendChanges(bars: Bar[], fast?: number, slow?: number): { type: "trend" | "cross" | "ema200"; id: string; dir: number; state?: TrendState }[];
+}
+
 declare module "@qt/core/series" {
   export function parseTf(tf: string): { n: number; unit: string; seconds: number };
   export function isIntraday(tf: string): boolean;

@@ -8,6 +8,7 @@ import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
 import { PatternAlertsButton } from "./pattern-alerts";
+import { TrendAlertsButton } from "./trend-alerts";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
@@ -809,6 +810,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
           </div>
           <PatternAlertsButton signedIn={signedIn} symbol={symbol} />
+          <TrendAlertsButton signedIn={signedIn} onPick={(m) => { setSymbol(m); setTf("1D"); setTool(null); setSelected(null); }} />
           <button onClick={toggleTextHidden} aria-pressed={textHidden}
             title={textHidden ? "Hiện lại chữ báo hiệu mô hình trên biểu đồ" : "Ẩn chữ báo hiệu mô hình (vai đầu vai, nhấn chìm, mục tiêu, Vol ×…); giữ mũi tên, chấm tròn và đường vẽ — rê chuột vào nến để xem tên"}
             className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${textHidden ? "border-warn/50 bg-warn/10 text-warn" : "border-border"}`}>
