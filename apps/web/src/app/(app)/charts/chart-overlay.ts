@@ -163,6 +163,12 @@ export type AutoDraw = {
   waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string } | null;
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [], waves: null };
+// (also read by the server page when it cleans a saved layout, so it lives here and not in the client component)
+/** Colours for the Elliott impulse path and labels; none of them is the blue of the default EMA lines. */
+export const WAVE_COLORS = [
+  { v: "#e879f9", label: "Tím hồng" }, { v: "#f5d742", label: "Vàng" }, { v: "#ffffff", label: "Trắng" },
+  { v: "#22d3ee", label: "Xanh ngọc" }, { v: "#a3e635", label: "Xanh lá" },
+];
 const WAVE_COLOR = { impulse: "#e879f9", correction: "#f5a142" };
 /** A-B-C (letters) are the correction; (1)-(5) the impulse. */
 const isCorrection = (label: string) => /^[ABC]$/.test(label);

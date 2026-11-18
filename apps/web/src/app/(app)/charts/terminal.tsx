@@ -11,7 +11,7 @@ import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { CHART_TEMPLATES, WAVE_COLORS, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
@@ -78,11 +78,6 @@ const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth" | "waveUpOnly" | "
   { key: "elliott", label: "Đếm sóng Elliott", hint: "Sóng đẩy (1)–(5) và điều chỉnh A-B-C gần nhất, theo 3 quy tắc cứng: sóng 2 không thủng đầu sóng 1, sóng 3 không ngắn nhất, sóng 4 không chồng vùng sóng 1. Độ nhạy theo mục Đỉnh/đáy" },
 ];
 const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
-/** Colours for the Elliott impulse path and labels; none of them is the blue of the default EMA lines. */
-export const WAVE_COLORS = [
-  { v: "#e879f9", label: "Tím hồng" }, { v: "#f5d742", label: "Vàng" }, { v: "#ffffff", label: "Trắng" },
-  { v: "#22d3ee", label: "Xanh ngọc" }, { v: "#a3e635", label: "Xanh lá" },
-];
 const STATUS_VI: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 /** Session boxes over the loaded bars: each session's high and low (sessions with no bars are skipped). */

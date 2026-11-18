@@ -2,8 +2,8 @@ import { Suspense } from "react";
 import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
-import { ChartTerminal, WAVE_COLORS, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import { SHAPE_KINDS, SHAPE_POINTS, type Shape } from "./chart-overlay";
+import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
+import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, type Shape } from "./chart-overlay";
 import { DEFAULT_STYLE } from "./chart-overlay";
 
 const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
