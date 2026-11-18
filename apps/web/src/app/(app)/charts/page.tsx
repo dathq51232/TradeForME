@@ -3,7 +3,7 @@ import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
 import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, type Shape } from "./chart-overlay";
+import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, type Shape } from "./chart-overlay";
 import { DEFAULT_STYLE } from "./chart-overlay";
 
 const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -21,7 +21,7 @@ const DEFAULT_LAYOUT: LayoutState = {
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
   overlays: { trades: true, events: true },
   view: { type: "candles", scale: "normal", magnet: false, style: DEFAULT_STYLE },
-  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, elliott: true, waveUpOnly: false, waveColor: "#e879f9", depth: 5 },
+  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, elliott: true, waveUpOnly: false, waveColor: "#e879f9", depth: 5, styles: {} },
 };
 const KINDS = new Set<string>(SHAPE_KINDS);
 const CHART_TYPES = new Set(["candles", "hollow", "heikin", "bars", "line", "area"]);
@@ -63,6 +63,7 @@ function cleanLayout(raw: unknown): LayoutState {
       waveUpOnly: s.auto?.waveUpOnly === true,
       waveColor: WAVE_COLORS.some((c) => c.v === s.auto?.waveColor) ? s.auto!.waveColor : DEFAULT_LAYOUT.auto.waveColor,
       depth: [3, 5, 8].includes(Number(s.auto?.depth)) ? Number(s.auto?.depth) : DEFAULT_LAYOUT.auto.depth,
+      styles: cleanLayerStyles(s.auto?.styles),
     },
   };
 }

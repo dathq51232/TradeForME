@@ -11,7 +11,7 @@ import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { CHART_TEMPLATES, WAVE_COLORS, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, type LayerKey, type LayerStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
@@ -20,7 +20,7 @@ import type { CalendarEvent } from "@/app/api/calendar/route";
 export type Overlays = { trades: boolean; events: boolean };
 export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
-export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; waveUpOnly: boolean; waveColor: string; depth: number };
+export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; waveUpOnly: boolean; waveColor: string; depth: number; styles: Partial<Record<LayerKey, LayerStyle>> };
 export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
@@ -68,7 +68,7 @@ const CANDLE_PRESETS = [
   { label: "Xanh dương / Cam", up: "#4f8cff", down: "#f5a142" },
   { label: "Xám / Đen", up: "#9aa4b2", down: "#000000" },
 ];
-const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth" | "waveUpOnly" | "waveColor">; label: string; hint: string }[] = [
+const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth" | "waveUpOnly" | "waveColor" | "styles">; label: string; hint: string }[] = [
   { key: "chart", label: "Mô hình giá", hint: "Tam giác tăng/giảm/cân, tam giác mở rộng (tam giác ngược), nêm, hai đỉnh/hai đáy, vai đầu vai" },
   { key: "wedges", label: "Nêm nhỏ tiếp diễn (báo sớm)", hint: "Sau một nhịp mạnh, giá hồi trong nêm hẹp dần; chấm điểm 0–100 (key level/EMA21, khối lượng, biên độ, RSI) và báo Sẵn sàng trước khi phá" },
   { key: "candles", label: "Mô hình nến", hint: "Búa, sao băng, nhấn chìm, harami, sao mai/sao hôm, ba chàng lính/ba con quạ, nhíp, marubozu…" },
@@ -77,6 +77,35 @@ const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth" | "waveUpOnly" | "
   { key: "sessions", label: "Phiên Sydney/Tokyo/London/New York", hint: "Khung cao-thấp của từng phiên (khung ≤ 1H) và giờ mở/đóng phiên" },
   { key: "elliott", label: "Đếm sóng Elliott", hint: "Sóng đẩy (1)–(5) và điều chỉnh A-B-C gần nhất, theo 3 quy tắc cứng: sóng 2 không thủng đầu sóng 1, sóng 3 không ngắn nhất, sóng 4 không chồng vùng sóng 1. Độ nhạy theo mục Đỉnh/đáy" },
 ];
+/** Display settings for one detection layer: strength, line width, and for pattern lines their length. */
+function LayerStyleControls({ k, value, onChange }: { k: LayerKey; value: LayerStyle; onChange: (s: LayerStyle) => void }) {
+  const row = "grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2";
+  const lines = k === "chart" || k === "wedges";
+  return (
+    <div className="ml-6 grid gap-1 rounded border border-border bg-panel-2/40 px-2 py-1.5">
+      <label className={row}><span className="text-muted">Độ đậm</span>
+        <input type="range" min={10} max={100} step={5} value={Math.round(value.opacity * 100)} onChange={(e) => onChange({ ...value, opacity: Number(e.target.value) / 100 })} />
+        <span className="text-right font-mono">{Math.round(value.opacity * 100)}%</span></label>
+      <label className={row}><span className="text-muted">Độ dày nét</span>
+        <input type="range" min={0.5} max={3} step={0.25} value={value.width} onChange={(e) => onChange({ ...value, width: Number(e.target.value) })} />
+        <span className="text-right font-mono">×{value.width}</span></label>
+      {lines && (
+        <label className={row} title="Rút ngắn (âm) hoặc kéo dài (dương) các cạnh của mô hình/nêm theo tỷ lệ chiều dài của chúng; đường zigzag nối đỉnh đáy giữ nguyên">
+          <span className="text-muted">Độ dài cạnh</span>
+          <input type="range" min={-50} max={200} step={10} value={Math.round(value.extend * 100)} onChange={(e) => onChange({ ...value, extend: Number(e.target.value) / 100 })} />
+          <span className="text-right font-mono">{value.extend > 0 ? "+" : ""}{Math.round(value.extend * 100)}%</span></label>
+      )}
+      {k === "elliott" && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input type="checkbox" checked={value.path} onChange={(e) => onChange({ ...value, path: e.target.checked })} />
+          <span>Hiện đường nối các đỉnh/đáy sóng</span>
+        </label>
+      )}
+      <button onClick={() => onChange(LAYER_STYLE_DEFAULT)} className="justify-self-start text-muted hover:text-foreground">↺ Mặc định</button>
+    </div>
+  );
+}
+const STYLED_LAYERS = new Set<string>(["chart", "wedges", "levels", "periods", "sessions", "elliott"]);
 const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
 const STATUS_VI: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
@@ -223,6 +252,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [view, setView] = useState<ChartView>(initial.layout.view);
   const [auto, setAuto] = useState<AutoSettings>(initial.layout.auto);
   const [autoMenu, setAutoMenu] = useState(false);
+  const [styleFor, setStyleFor] = useState<LayerKey | null>(null);
+  const layerStyle = (k: LayerKey): LayerStyle => ({ ...LAYER_STYLE_DEFAULT, ...auto.styles?.[k] });
+  const setLayerStyle = (k: LayerKey, s: LayerStyle) => setAuto((a) => ({ ...a, styles: { ...a.styles, [k]: s } }));
   const [styleMenu, setStyleMenu] = useState(false);
   const setStyle = (patch: Partial<ChartStyle>) => setView((v) => ({ ...v, style: { ...v.style, ...patch } }));
   const [selected, setSelected] = useState<string | null>(null);
@@ -623,17 +655,18 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const autoDraw = useMemo<AutoDraw>(() => {
     if (!found.patterns.length && !found.wedges.length && !found.levels.length && !found.periods.length && !found.sessions.length && !found.elliott) return NO_AUTO;
     return {
+      styles: auto.styles,
       // the three newest patterns that still matter; older ones stay listed only while they are recent
       patterns: [
-        ...found.wedges.filter((w) => w.stage !== "expired").slice(0, 3).map((w) => ({ ...w, name: `${w.name} ${w.score}đ` })),
-        ...found.patterns.filter((p) => p.status !== "expired").slice(0, 3),
+        ...found.wedges.filter((w) => w.stage !== "expired").slice(0, 3).map((w) => ({ ...w, layer: "wedges" as const, name: `${w.name} ${w.score}đ` })),
+        ...found.patterns.filter((p) => p.status !== "expired").slice(0, 3).map((p) => ({ ...p, layer: "chart" as const })),
       ],
       levels: [
         ...found.levels.map((l) => ({
-          price: l.price, from: l.first, color: l.side === "support" ? COLORS.up : COLORS.down, width: 0.5 + l.strength * 0.5, dashed: false,
+          layer: "levels" as const, price: l.price, from: l.first, color: l.side === "support" ? COLORS.up : COLORS.down, width: 0.5 + l.strength * 0.5, dashed: false,
           label: `Key ${fmt(l.price, info.digits)} · ${l.swings} lần`,
         })),
-        ...found.periods.map((p) => ({ price: p.price, from: p.time, color: COLORS.muted, width: 1, dashed: true, label: `${p.label} ${fmt(p.price, info.digits)}` })),
+        ...found.periods.map((p) => ({ layer: "periods" as const, price: p.price, from: p.time, color: COLORS.muted, width: 1, dashed: true, label: `${p.label} ${fmt(p.price, info.digits)}` })),
       ],
       sessions: found.sessions,
       waves: found.elliott && {
@@ -642,7 +675,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         color: auto.waveColor,
       },
     };
-  }, [found, info.digits, auto.waveColor]);
+  }, [found, info.digits, auto.waveColor, auto.styles]);
   const chartMarkers = useMemo<TimedMarker[]>(() => [
     ...tradeMarkers,
     // candlestick-pattern labels belong to pattern recognition: "Ẩn tất cả" takes them off too
@@ -876,10 +909,20 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             {autoMenu && (
               <div className="absolute right-0 z-20 mt-1 grid w-80 max-w-[90vw] gap-1.5 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
                 {AUTO_LAYERS.map((l) => (
-                  <label key={l.key} className="flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 hover:bg-panel-2">
-                    <input type="checkbox" checked={auto[l.key]} onChange={(e) => setAuto((a) => ({ ...a, [l.key]: e.target.checked }))} className="mt-0.5" />
-                    <span><span className="block text-foreground">{l.label}</span><span className="text-muted">{l.hint}</span></span>
-                  </label>
+                  <div key={l.key} className="grid gap-1">
+                    <div className="flex items-start gap-1">
+                      <label className="flex flex-1 cursor-pointer items-start gap-2 rounded px-1 py-0.5 hover:bg-panel-2">
+                        <input type="checkbox" checked={auto[l.key]} onChange={(e) => setAuto((a) => ({ ...a, [l.key]: e.target.checked }))} className="mt-0.5" />
+                        <span><span className="block text-foreground">{l.label}</span><span className="text-muted">{l.hint}</span></span>
+                      </label>
+                      {STYLED_LAYERS.has(l.key) && (
+                        <button onClick={() => setStyleFor((k) => (k === l.key ? null : (l.key as LayerKey)))} title="Tuỳ chỉnh hiển thị lớp này: độ đậm, độ dày nét, độ dài cạnh"
+                          aria-label={`Tuỳ chỉnh hiển thị: ${l.label}`}
+                          className={`rounded px-1.5 py-0.5 ${styleFor === l.key ? "bg-accent/20 text-foreground" : "text-muted hover:text-foreground"}`}>⚙</button>
+                      )}
+                    </div>
+                    {styleFor === l.key && <LayerStyleControls k={l.key as LayerKey} value={layerStyle(l.key as LayerKey)} onChange={(s) => setLayerStyle(l.key as LayerKey, s)} />}
+                  </div>
                 ))}
                 {auto.elliott && (
                   <div className="grid gap-1.5 rounded border border-border px-2 py-1.5">

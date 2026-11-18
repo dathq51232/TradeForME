@@ -154,10 +154,36 @@ function span(seconds: number): string {
   return `${Math.round(s / 60)} phút`;
 }
 
+/** Display settings of one automatic-reading layer (saved in the layout). */
+export type LayerKey = "chart" | "wedges" | "levels" | "periods" | "sessions" | "elliott";
+export type LayerStyle = {
+  /** 0.1-1, multiplies the layer's own transparency */ opacity: number;
+  /** 0.5-3, multiplies its line widths */ width: number;
+  /** -0.5-2: pattern and wedge boundary lines shortened (<0) or extended (>0) by this share of their length */ extend: number;
+  /** Elliott: draw the line through the wave points */ path: boolean;
+};
+export const LAYER_STYLE_DEFAULT: LayerStyle = { opacity: 1, width: 1, extend: 0, path: false };
+const LAYER_KEYS: LayerKey[] = ["chart", "wedges", "levels", "periods", "sessions", "elliott"];
+const clamp = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+/** Only known layers and in-range values, so an old or edited layout cannot break the chart. */
+export function cleanLayerStyles(raw: unknown): Partial<Record<LayerKey, LayerStyle>> {
+  const out: Partial<Record<LayerKey, LayerStyle>> = {};
+  const src = (raw && typeof raw === "object" ? raw : {}) as Record<string, Partial<LayerStyle>>;
+  for (const k of LAYER_KEYS) {
+    const s = src[k];
+    if (!s || typeof s !== "object") continue;
+    out[k] = {
+      opacity: clamp(s.opacity, 0.1, 1, 1), width: clamp(s.width, 0.5, 3, 1), extend: clamp(s.extend, -0.5, 2, 0), path: s.path === true,
+    };
+  }
+  return out;
+}
+
 /** What automatic chart reading asks the overlay to draw (computed by @qt/core/patterns). */
 export type AutoDraw = {
-  patterns: { name: string; status: string; bias: number; target: number | null; end: number; label: Pt; lines: { role: string; a: Pt; b: Pt }[] }[];
-  levels: { price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
+  styles?: Partial<Record<LayerKey, LayerStyle>>;
+  patterns: { layer?: LayerKey; name: string; status: string; bias: number; target: number | null; end: number; label: Pt; lines: { role: string; a: Pt; b: Pt }[] }[];
+  levels: { layer?: LayerKey; price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
   /** Elliott count: its turning points with their labels ("" for the start), and one projected level. */
   waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string } | null;
@@ -200,6 +226,8 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     this.request?.();
   }
   updateAllViews() {}
+
+  private style(k: LayerKey): LayerStyle { return { ...LAYER_STYLE_DEFAULT, ...this.auto.styles?.[k] }; }
 
   private x(t: number) {
     return this.chart?.timeScale().logicalToCoordinate(this.index.logical(t) as Logical) ?? null;
@@ -326,20 +354,22 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
   /** Session boxes: from the session's open to its close, spanning the high and low traded inside it. */
   private drawSessions({ context: ctx, mediaSize }: Media) {
     if (!this.auto.sessions.length) return;
+    const st = this.style("sessions");
     ctx.save();
     ctx.font = "10px system-ui, sans-serif";
+    ctx.lineWidth = st.width;
     for (const s of this.auto.sessions) {
       const x1 = this.x(s.start), x2 = this.x(s.end), yh = this.y(s.high), yl = this.y(s.low);
       if (x1 == null || x2 == null || yh == null || yl == null || x2 < 0 || x1 > mediaSize.width) continue;
-      ctx.globalAlpha = 0.07;
+      ctx.globalAlpha = 0.07 * st.opacity;
       ctx.fillStyle = s.color;
       ctx.fillRect(x1, yh, x2 - x1, yl - yh);
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.5 * st.opacity;
       ctx.strokeStyle = s.color;
       ctx.setLineDash([2, 3]);
       ctx.strokeRect(x1, yh, x2 - x1, yl - yh);
       if (x2 - x1 > 34) {
-        ctx.globalAlpha = 0.9;
+        ctx.globalAlpha = 0.9 * st.opacity;
         ctx.fillStyle = s.color;
         ctx.fillText(s.name, x1 + 2, yh - 3);
       }
@@ -353,17 +383,18 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     ctx.save();
     ctx.font = "10px system-ui, sans-serif";
     for (const l of this.auto.levels) {
+      const st = this.style(l.layer ?? "levels");
       const y = this.y(l.price);
       if (y == null || y < 0 || y > mediaSize.height) continue;
       const x0 = Math.max(0, Math.min(this.x(l.from) ?? 0, mediaSize.width - 140));
-      ctx.globalAlpha = 0.75;
+      ctx.globalAlpha = 0.75 * st.opacity;
       ctx.strokeStyle = l.color;
-      ctx.lineWidth = l.width;
+      ctx.lineWidth = l.width * st.width;
       ctx.setLineDash(l.dashed ? [5, 4] : []);
       ctx.beginPath(); ctx.moveTo(x0, Math.round(y) + 0.5); ctx.lineTo(mediaSize.width, Math.round(y) + 0.5); ctx.stroke();
       const text = l.label;
       const w = ctx.measureText(text).width;
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = Math.min(1, 0.4 + st.opacity);
       ctx.fillStyle = l.color;
       ctx.fillText(text, mediaSize.width - w - 8, y - 3);
     }
@@ -378,12 +409,17 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     for (const pat of this.auto.patterns) {
       const color = pat.bias > 0 ? COLOR.up : pat.bias < 0 ? COLOR.down : COLOR.medium;
       const faded = pat.status === "expired" || pat.status === "failed";
+      const st = this.style(pat.layer ?? "chart");
       for (const l of pat.lines) {
-        const a = this.xy(l.a), b = this.xy(l.b);
-        if (!a || !b) continue;
-        ctx.globalAlpha = faded ? 0.35 : 0.85;
+        const a = this.xy(l.a), b0 = this.xy(l.b);
+        if (!a || !b0) continue;
+        // boundary lines shortened or extended past their end (straight in bar space, so on screen too); the
+        // zigzag through the pivots ("path") keeps its length
+        const k = l.role === "path" ? 1 : 1 + st.extend;
+        const b = { x: a.x + (b0.x - a.x) * k, y: a.y + (b0.y - a.y) * k };
+        ctx.globalAlpha = (faded ? 0.35 : 0.85) * st.opacity;
         ctx.strokeStyle = color;
-        ctx.lineWidth = l.role === "path" ? 1 : l.role === "support" || l.role === "lower" ? 2 : 1.5;
+        ctx.lineWidth = (l.role === "path" ? 1 : l.role === "support" || l.role === "lower" ? 2 : 1.5) * st.width;
         ctx.setLineDash(l.role === "neck" ? [6, 4] : []);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
@@ -392,7 +428,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       if (pat.target != null && !faded) {
         const xe = this.x(pat.end), yt = this.y(pat.target);
         if (xe != null && yt != null) {
-          ctx.globalAlpha = 0.8;
+          ctx.globalAlpha = 0.8 * st.opacity;
           ctx.strokeStyle = color;
           ctx.lineWidth = 1;
           ctx.setLineDash([2, 3]);
@@ -418,12 +454,13 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     const xy = w.points.map((q) => this.xy(q));
     const impulse = w.color ?? WAVE_COLOR.impulse;
     const roleColor = (label: string) => (isCorrection(label) ? WAVE_COLOR.correction : impulse);
+    const st = this.style("elliott");
     ctx.save();
-    ctx.lineWidth = 1.5;
-    for (let k = 1; k < w.points.length; k++) {
+    ctx.lineWidth = 1.5 * st.width;
+    for (let k = 1; st.path && k < w.points.length; k++) {
       const a = xy[k - 1], b = xy[k];
       if (!a || !b) continue;
-      ctx.globalAlpha = 0.7;
+      ctx.globalAlpha = 0.7 * st.opacity;
       ctx.strokeStyle = roleColor(w.points[k].label);
       ctx.setLineDash(w.points[k].provisional ? [4, 4] : []);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
@@ -440,7 +477,8 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       const color = roleColor(q.label);
       const r = q.label.length > 1 ? 12 : 9;
       const cy = at.y + (top ? -(r + 5) : r + 5);
-      ctx.globalAlpha = q.provisional ? 0.6 : 1;
+      ctx.globalAlpha = (q.provisional ? 0.6 : 1) * st.opacity;
+      ctx.lineWidth = st.width;
       ctx.fillStyle = "rgba(11,15,23,0.72)";
       ctx.strokeStyle = color;
       ctx.beginPath(); ctx.ellipse(at.x, cy, r, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -452,7 +490,8 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     const last = xy[xy.length - 1];
     const yt = w.target ? this.y(w.target.price) : null;
     if (w.target && last && yt != null) {
-      ctx.globalAlpha = 0.8;
+      ctx.globalAlpha = 0.8 * st.opacity;
+      ctx.lineWidth = st.width;
       ctx.strokeStyle = roleColor(w.points[w.points.length - 1].label);
       ctx.setLineDash([2, 3]);
       ctx.beginPath(); ctx.moveTo(last.x, yt); ctx.lineTo(last.x + 80, yt); ctx.stroke();
