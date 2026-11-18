@@ -56,6 +56,15 @@ declare module "@qt/core/trend" {
   export function trendChanges(bars: Bar[], fast?: number, slow?: number): { type: "trend" | "cross" | "ema200"; id: string; dir: number; state?: TrendState }[];
 }
 
+declare module "@qt/core/elliott" {
+  export type WavePoint = { i: number; time: number; price: number; label: string; provisional: boolean };
+  export type ElliottCount = {
+    dir: 1 | -1; stage: "w3" | "w4" | "w5" | "A" | "B" | "C"; text: string; score: number;
+    points: WavePoint[]; target: { price: number; label: string } | null;
+  };
+  export function elliottWaves(bars: Bar[], opts?: { depth?: number; minAtr?: number }): ElliottCount | null;
+  export function wavePivots(bars: Bar[], opts?: { depth?: number; minAtr?: number }): { i: number; time: number; price: number; kind: "H" | "L"; provisional?: boolean }[];
+}
 declare module "@qt/core/series" {
   export function parseTf(tf: string): { n: number; unit: string; seconds: number };
   export function isIntraday(tf: string): boolean;

@@ -14,7 +14,8 @@
     "./volume-profile": "./src/volume-profile.js",
     "./patterns": "./src/patterns.js",
     "./rsi-tools": "./src/rsi-tools.js",
-    "./trend": "./src/trend.js"
+    "./trend": "./src/trend.js",
+    "./elliott": "./src/elliott.js"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

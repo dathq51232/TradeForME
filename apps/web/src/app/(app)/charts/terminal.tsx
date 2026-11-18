@@ -11,6 +11,7 @@ import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { elliottWaves } from "@qt/core/elliott";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
@@ -18,7 +19,7 @@ import type { CalendarEvent } from "@/app/api/calendar/route";
 export type Overlays = { trades: boolean; events: boolean };
 export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
-export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; depth: number };
+export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; depth: number };
 export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
@@ -44,7 +45,8 @@ const TOOLS: { id: Exclude<Tool, null>; icon: string; label: string; hint: strin
   { id: "ray", icon: "↗", label: "Tia", hint: "click 2 điểm, kéo dài theo hướng", group: 0 },
   { id: "channel", icon: "▱", label: "Kênh song song", hint: "click 2 điểm cho cạnh đầu, điểm thứ 3 cho độ rộng", group: 1 },
   { id: "rect", icon: "▭", label: "Vùng chữ nhật", hint: "click 2 góc", group: 1 },
-  { id: "fib", icon: "𝑓", label: "Fibonacci thoái lui", hint: "click đáy rồi đỉnh (hoặc ngược lại)", group: 1 },
+  { id: "fib", icon: "𝑓", label: "Fibonacci thoái lui (0 → 1, mở rộng 1.272 / 1.618)", hint: "click điểm đầu sóng rồi điểm cuối sóng (đáy → đỉnh để đo hồi giảm)", group: 1 },
+  { id: "fibext", icon: "𝑓⁺", label: "Fibonacci mở rộng theo xu hướng (mục tiêu sóng)", hint: "click đầu sóng, đỉnh sóng, rồi điểm cuối nhịp hồi: các mức 0.618 / 1 / 1.618 / 2.618 tính từ điểm thứ 3", group: 1 },
   { id: "measure", icon: "⇕", label: "Đo giá và thời gian", hint: "click điểm đầu và điểm cuối", group: 2 },
   { id: "position", icon: "⚖", label: "Vị thế: vào lệnh, dừng lỗ, chốt lời", hint: "click giá vào, rồi dừng lỗ, rồi chốt lời", group: 2 },
   { id: "text", icon: "T", label: "Ghi chú", hint: "click vị trí rồi nhập nội dung", group: 2 },
@@ -72,6 +74,7 @@ const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; h
   { key: "levels", label: "Key level theo giá đóng cửa", hint: "Vùng giá nến hay đóng cửa và đảo chiều; nét đậm hơn = mạnh hơn" },
   { key: "periods", label: "Giá đóng cửa ngày/tuần/tháng trước", hint: "Theo lịch UTC" },
   { key: "sessions", label: "Phiên Sydney/Tokyo/London/New York", hint: "Khung cao-thấp của từng phiên (khung ≤ 1H) và giờ mở/đóng phiên" },
+  { key: "elliott", label: "Đếm sóng Elliott", hint: "Sóng đẩy (1)–(5) và điều chỉnh A-B-C gần nhất, theo 3 quy tắc cứng: sóng 2 không thủng đầu sóng 1, sóng 3 không ngắn nhất, sóng 4 không chồng vùng sóng 1. Độ nhạy theo mục Đỉnh/đáy" },
 ];
 const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
 const STATUS_VI: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
@@ -613,10 +616,11 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       levels: auto.levels && bs.length ? closeLevels(bs, { max: 6 }) : [],
       periods: auto.periods && bs.length ? periodCloses(bs).filter((p) => step < periodLen[p.period]) : [],
       sessions: auto.sessions && step <= 3600 ? sessionBoxes(bs, step) : [],
+      elliott: auto.elliott && bs.length ? elliottWaves(bs, { depth: auto.depth }) : null,
     };
   }, [rawBars, auto, step]);
   const autoDraw = useMemo<AutoDraw>(() => {
-    if (!found.patterns.length && !found.wedges.length && !found.levels.length && !found.periods.length && !found.sessions.length) return NO_AUTO;
+    if (!found.patterns.length && !found.wedges.length && !found.levels.length && !found.periods.length && !found.sessions.length && !found.elliott) return NO_AUTO;
     return {
       // the three newest patterns that still matter; older ones stay listed only while they are recent
       patterns: [
@@ -631,6 +635,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         ...found.periods.map((p) => ({ price: p.price, from: p.time, color: COLORS.muted, width: 1, dashed: true, label: `${p.label} ${fmt(p.price, info.digits)}` })),
       ],
       sessions: found.sessions,
+      waves: found.elliott && {
+        points: found.elliott.points.map((q) => ({ t: q.time, p: q.price, label: q.label, provisional: q.provisional })),
+        target: found.elliott.target,
+      },
     };
   }, [found, info.digits]);
   const chartMarkers = useMemo<TimedMarker[]>(() => [
@@ -955,9 +963,24 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5 text-xs">
             <PanelToggle panel="pat" title="Thu gọn / mở rộng hàng nhận diện" className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-muted hover:bg-panel-2 hover:text-foreground">
               <span aria-hidden className="pat-collapsed:hidden">▾</span><span aria-hidden className="pat-expanded:hidden">▸</span>
-              Nhận diện ({wedgeChips.length + patternChips.length + (liveCandle ? 1 : 0)})
+              Nhận diện ({wedgeChips.length + patternChips.length + (liveCandle ? 1 : 0) + (found.elliott ? 1 : 0)})
             </PanelToggle>
             <span className={`contents pat-collapsed:hidden ${indHidden ? "[&>*]:opacity-50" : ""}`}>
+            {found.elliott && (
+              <span className={`rounded border px-1.5 py-0.5 ${found.elliott.stage.startsWith("w") ? (found.elliott.dir > 0 ? "border-up/40 text-up" : "border-down/40 text-down") : "border-warn/40 text-warn"}`}
+                title={[
+                  `Điểm phù hợp quy tắc phụ: ${found.elliott.score}`,
+                  found.elliott.target ? `${found.elliott.target.label}: ${fmt(found.elliott.target.price, info.digits)}` : "",
+                  "Đếm sóng tự động, có thể đếm lại khi có đỉnh/đáy mới. Chỉ để tham khảo, không phải khuyến nghị.",
+                ].filter(Boolean).join("\n")}>
+                〰 {found.elliott.text}{found.elliott.target ? ` → ${fmt(found.elliott.target.price, info.digits)}` : ""}
+              </span>
+            )}
+            {auto.elliott && !found.elliott && rawBars?.length ? (
+              <span className="rounded border border-border px-1.5 py-0.5 text-muted" title="Không có sóng đẩy 1-5 nào đúng 3 quy tắc cứng kết thúc gần đây. Thử khung thời gian khác hoặc độ nhạy Đỉnh/đáy khác.">
+                〰 Elliott: chưa có số đếm rõ ở khung này
+              </span>
+            ) : null}
             {wedgeChips.map((w) => (
               <span key={`${w.kind}${w.start}`}
                 title={[

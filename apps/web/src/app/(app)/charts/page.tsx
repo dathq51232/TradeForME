@@ -21,7 +21,7 @@ const DEFAULT_LAYOUT: LayoutState = {
   indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
   overlays: { trades: true, events: true },
   view: { type: "candles", scale: "normal", magnet: false, style: DEFAULT_STYLE },
-  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, depth: 5 },
+  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, elliott: true, depth: 5 },
 };
 const KINDS = new Set<string>(SHAPE_KINDS);
 const CHART_TYPES = new Set(["candles", "hollow", "heikin", "bars", "line", "area"]);
@@ -59,6 +59,7 @@ function cleanLayout(raw: unknown): LayoutState {
       levels: typeof s.auto?.levels === "boolean" ? s.auto.levels : DEFAULT_LAYOUT.auto.levels,
       periods: typeof s.auto?.periods === "boolean" ? s.auto.periods : DEFAULT_LAYOUT.auto.periods,
       sessions: typeof s.auto?.sessions === "boolean" ? s.auto.sessions : DEFAULT_LAYOUT.auto.sessions,
+      elliott: typeof s.auto?.elliott === "boolean" ? s.auto.elliott : DEFAULT_LAYOUT.auto.elliott,
       depth: [3, 5, 8].includes(Number(s.auto?.depth)) ? Number(s.auto?.depth) : DEFAULT_LAYOUT.auto.depth,
     },
   };

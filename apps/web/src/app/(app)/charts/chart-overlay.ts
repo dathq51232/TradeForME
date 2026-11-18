@@ -8,21 +8,31 @@ import type {
 } from "lightweight-charts";
 
 export type Pt = { t: number; p: number };
-export type ShapeKind = "trend" | "ray" | "hray" | "vline" | "rect" | "fib" | "channel" | "measure" | "position" | "text";
+export type ShapeKind = "trend" | "ray" | "hray" | "vline" | "rect" | "fib" | "fibext" | "channel" | "measure" | "position" | "text";
 /** a, b, c: the clicked points (c only for 3-point tools); text: the note of a text shape. */
 export type Shape = { id: string; kind: ShapeKind; a: Pt; b: Pt; c?: Pt; text?: string };
 export type ChartEvent = { time: number; title: string; country: string; impact: "high" | "medium" | "low" };
 
-export const SHAPE_KINDS: ShapeKind[] = ["trend", "ray", "hray", "vline", "rect", "fib", "channel", "measure", "position", "text"];
+export const SHAPE_KINDS: ShapeKind[] = ["trend", "ray", "hray", "vline", "rect", "fib", "fibext", "channel", "measure", "position", "text"];
 export const SHAPE_LABEL: Record<ShapeKind, string> = {
-  trend: "Đường xu hướng", ray: "Tia", hray: "Tia ngang", vline: "Đường dọc", rect: "Hình chữ nhật", fib: "Fibonacci",
+  trend: "Đường xu hướng", ray: "Tia", hray: "Tia ngang", vline: "Đường dọc", rect: "Hình chữ nhật", fib: "Fibonacci thoái lui", fibext: "Fibonacci mở rộng",
   channel: "Kênh song song", measure: "Đo giá/thời gian", position: "Vị thế (R:R)", text: "Ghi chú",
 };
 /** Clicks needed to finish each tool. */
 export const SHAPE_POINTS: Record<ShapeKind, 1 | 2 | 3> = {
-  trend: 2, ray: 2, hray: 1, vline: 1, rect: 2, fib: 2, channel: 3, measure: 2, position: 3, text: 1,
+  trend: 2, ray: 2, hray: 1, vline: 1, rect: 2, fib: 2, fibext: 3, channel: 3, measure: 2, position: 3, text: 1,
 };
-export const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+/** Retracement levels (0 = second click, 1 = first click; 1.272 and 1.618 project past the first click). */
+export const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.618];
+/** Trend-based extension levels: from the third click, in lengths of the first move. */
+export const FIB_EXT_LEVELS = [0, 0.618, 1, 1.272, 1.618, 2, 2.618];
+/** One colour per level, so a level is recognised at a glance (0.5 and 0.618, the ones traders watch, stand out). */
+const FIB_COLOR: Record<string, string> = {
+  "0": "#9aa4b2", "0.236": "#f45b69", "0.382": "#f5a142", "0.5": "#2ecc71", "0.618": "#00b3a4", "0.786": "#4f8cff",
+  "1": "#9aa4b2", "1.272": "#c58af9", "1.618": "#e05bd0", "2": "#8292a8", "2.618": "#f5b942",
+};
+const fibColor = (lv: number) => FIB_COLOR[String(lv)] ?? COLOR_FIB_DEFAULT;
+const COLOR_FIB_DEFAULT = "#c58af9";
 const COLOR = {
   line: "#4f8cff", rect: "rgba(79,140,255,0.12)", fib: "#c58af9", high: "#f45b69", medium: "#f5a142", low: "#8292a8",
   text: "#c9d4e3", up: "#00c087", down: "#f45b69", upFill: "rgba(0,192,135,0.14)", downFill: "rgba(244,91,105,0.14)",
@@ -149,8 +159,11 @@ export type AutoDraw = {
   patterns: { name: string; status: string; bias: number; target: number | null; end: number; label: Pt; lines: { role: string; a: Pt; b: Pt }[] }[];
   levels: { price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
+  /** Elliott count: its turning points with their labels ("" for the start), and one projected level. */
+  waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null } | null;
 };
-export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [] };
+export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [], waves: null };
+const WAVE_COLOR = { impulse: "#5aa9ff", correction: "#f5a142" };
 export const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 export class ChartOverlay implements ISeriesPrimitive<Time> {
@@ -211,9 +224,12 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
         case "vline": hit = Math.abs(x - a.x) < tol; break;
         case "text": hit = x >= a.x - 4 && x <= a.x + 8 + 7 * (s.text?.length ?? 4) && y >= a.y - 16 && y <= a.y + 4; break;
         case "rect": case "measure": hit = inBox(p, a, b, tol); break;
-        case "fib": {
-          const top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y);
-          hit = x >= Math.min(a.x, b.x) - tol && x <= width && y >= top - tol && y <= bottom + tol;
+        case "fib": case "fibext": {
+          const ys = this.fibPrices(s).map((q) => this.y(q.price) as number | null).filter((v): v is number => v != null);
+          if (s.kind === "fibext" && !c) { hit = distToSegment(p, a, b) < tol; break; }
+          const left = s.kind === "fibext" && c ? c.x : Math.min(a.x, b.x);
+          hit = (ys.length > 0 && x >= left - tol && x <= width && y >= Math.min(...ys) - tol && y <= Math.max(...ys) + tol)
+            || distToSegment(p, a, b) < tol || (c != null && distToSegment(p, b, c) < tol);
           break;
         }
         case "channel": {
@@ -279,6 +295,13 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     return { ...s, [part]: to, ...(one && part === "a" ? { b: to } : {}) };
   }
 
+  /** The price of each Fibonacci level of a fib / fibext shape (fibext needs its third point). */
+  fibPrices(s: Shape): { lv: number; price: number }[] {
+    if (s.kind === "fib") return FIB_LEVELS.map((lv) => ({ lv, price: s.b.p + (s.a.p - s.b.p) * lv }));
+    if (s.kind === "fibext" && s.c) return FIB_EXT_LEVELS.map((lv) => ({ lv, price: s.c!.p + (s.b.p - s.a.p) * lv }));
+    return [];
+  }
+
   /** Vertical offset (px) of the channel's parallel line: through c, parallel to a-b. */
   private channelOffset(a: XY, b: XY, c: XY) {
     const slope = b.x === a.x ? 0 : (b.y - a.y) / (b.x - a.x);
@@ -286,7 +309,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
   }
 
   private renderer: IPrimitivePaneRenderer = {
-    draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawPatterns(s); this.drawShapes(s); }),
+    draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawPatterns(s); this.drawWaves(s); this.drawShapes(s); }),
     drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawSessions(s); this.drawLevels(s); this.drawEvents(s); }),
   };
   private view: IPrimitivePaneView = { zOrder: (): PrimitivePaneViewZOrder => "top", renderer: () => this.renderer };
@@ -377,6 +400,60 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     ctx.restore();
   }
 
+  /**
+   * Elliott count, kept quiet: a thin line through the turning points (impulse blue, correction orange, the live leg
+   * dashed) and one small round badge per wave, above a top and below a bottom.
+   */
+  private drawWaves({ context: ctx }: Media) {
+    const w = this.auto.waves;
+    if (!w || w.points.length < 2) return;
+    const xy = w.points.map((q) => this.xy(q));
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let k = 1; k < w.points.length; k++) {
+      const a = xy[k - 1], b = xy[k];
+      if (!a || !b) continue;
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = k > 5 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      ctx.setLineDash(w.points[k].provisional ? [4, 4] : []);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    w.points.forEach((q, k) => {
+      const at = xy[k];
+      if (!at || !q.label) return;
+      const other = w.points[k - 1] ?? w.points[k + 1];
+      const top = !other || q.p >= other.p;
+      const color = k > 5 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      const r = q.label.length > 1 ? 12 : 9;
+      const cy = at.y + (top ? -(r + 5) : r + 5);
+      ctx.globalAlpha = q.provisional ? 0.6 : 1;
+      ctx.fillStyle = "rgba(11,15,23,0.72)";
+      ctx.strokeStyle = color;
+      ctx.beginPath(); ctx.ellipse(at.x, cy, r, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.fillText(q.label, at.x, cy + 0.5);
+    });
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    const last = xy[xy.length - 1];
+    const yt = w.target ? this.y(w.target.price) : null;
+    if (w.target && last && yt != null) {
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = w.points.length > 6 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(last.x, yt); ctx.lineTo(last.x + 80, yt); ctx.stroke();
+      if (this.patternText) {
+        ctx.font = "10px system-ui, sans-serif";
+        this.label(ctx, `${w.target.label} · ${w.target.price.toFixed(this.digits)}`, last.x + 4, yt - 4, ctx.strokeStyle as string);
+      }
+    }
+    ctx.restore();
+  }
+
   private drawEvents({ context: ctx, mediaSize }: Media) {
     ctx.save();
     ctx.font = "10px system-ui, sans-serif";
@@ -456,21 +533,35 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
           ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
           break;
         }
-        case "fib": {
-          const left = Math.min(a.x, b.x);
+        case "fib": case "fibext": {
+          // the clicked legs, dashed: a-b (and b-c for the extension)
+          const base = ctx.globalAlpha;
           ctx.strokeStyle = COLOR.fib;
-          ctx.fillStyle = COLOR.fib;
-          for (const lv of FIB_LEVELS) {
-            const price = s.b.p + (s.a.p - s.b.p) * lv;
-            const y = this.y(price);
-            if (y == null) continue;
-            ctx.globalAlpha = lv === 0 || lv === 1 ? 0.9 : 0.6;
-            ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W, y); ctx.stroke();
-            ctx.fillText(`${(lv * 100).toFixed(1)}%  ${fmt(price)}`, left + 4, y - 3);
-          }
+          ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
-          ctx.globalAlpha = 0.5;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          ctx.globalAlpha = base * 0.6;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); if (c) ctx.lineTo(c.x, c.y); ctx.stroke();
+          ctx.setLineDash([]);
+          const levels = this.fibPrices(s).map((q) => ({ ...q, y: this.y(q.price) as number | null })).filter((q): q is { lv: number; price: number; y: number } => q.y != null);
+          if (!levels.length) break;
+          const left = s.kind === "fibext" && c ? c.x : Math.min(a.x, b.x);
+          // light bands between levels, then the lines, then the labels on the left of each line
+          for (let k = 0; k < levels.length - 1; k++) {
+            ctx.globalAlpha = base * 0.07;
+            ctx.fillStyle = fibColor(levels[k + 1].lv);
+            ctx.fillRect(left, Math.min(levels[k].y, levels[k + 1].y), W - left, Math.abs(levels[k + 1].y - levels[k].y));
+          }
+          for (const q of levels) {
+            const key = q.lv === 0.5 || q.lv === 0.618;
+            ctx.globalAlpha = base * (key ? 1 : 0.75);
+            ctx.strokeStyle = fibColor(q.lv);
+            ctx.lineWidth = key ? 1.5 : 1;
+            const y = Math.round(q.y) + 0.5;
+            ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W, y); ctx.stroke();
+            ctx.fillStyle = fibColor(q.lv);
+            ctx.fillText(`${q.lv}  (${fmt(q.price)})`, left + 4, y - 3);
+          }
+          ctx.lineWidth = 1.5;
           break;
         }
         case "channel": {

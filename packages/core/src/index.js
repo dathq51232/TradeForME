@@ -8,3 +8,4 @@ export { VolumeProfile, SessionVolumeProfile } from "./volume-profile.js";
 export * as patterns from "./patterns.js";
 export * as rsiTools from "./rsi-tools.js";
 export * as trend from "./trend.js";
+export * as elliott from "./elliott.js";
