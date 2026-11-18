@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { PanelToggle } from "@/components/panel-toggle";
 import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
+import { MarketBrief } from "./market-brief";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
@@ -672,7 +673,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   return (
     <div className="-m-4 flex min-h-[calc(100vh-7rem)] flex-col lg:-m-6 lg:flex-row">
       {/* Watchlist: on the right on wide screens (on top on phones); collapses to a thin strip */}
-      <aside className="order-first border-b border-border bg-panel lg:order-last lg:w-60 lg:shrink-0 lg:border-b-0 lg:border-l wl-collapsed:lg:w-10">
+      <aside className="order-first border-b border-border bg-panel lg:order-last lg:max-h-[calc(100vh-4rem)] lg:w-64 lg:shrink-0 lg:overflow-y-auto lg:border-b-0 lg:border-l wl-collapsed:lg:w-10">
         <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted wl-collapsed:lg:justify-center wl-collapsed:lg:px-0">
           <PanelToggle panel="wl" title="Thu gọn / mở rộng watchlist"
             className="rounded px-2 py-1 text-sm leading-none hover:bg-panel-2 hover:text-foreground">
@@ -712,6 +713,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             );
           })}
         </ul>
+        <MarketBrief symbol={symbol} tfLabel={tfInfo.label} bars={bars} digits={info.digits} elliott={found.elliott} quotes={quotes}
+          onPick={(m) => { setSymbol(m); setTool(null); setSelected(null); }} />
       </aside>
 
       {/* Chart area */}
@@ -860,7 +863,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               className={`px-2 py-1 ${overlays.events ? "text-foreground" : "text-muted line-through"}`}>📅 Tin</button>
           </div>
           <PatternAlertsButton signedIn={signedIn} symbol={symbol} />
-          <TrendAlertsButton signedIn={signedIn} onPick={(m) => { setSymbol(m); setTf("1D"); setTool(null); setSelected(null); }} />
+          <TrendAlertsButton signedIn={signedIn} />
           <button onClick={toggleTextHidden} aria-pressed={textHidden}
             title={textHidden ? "Hiện lại chữ báo hiệu mô hình trên biểu đồ" : "Ẩn chữ báo hiệu mô hình (vai đầu vai, nhấn chìm, mục tiêu, Vol ×…); giữ mũi tên, chấm tròn và đường vẽ — rê chuột vào nến để xem tên"}
             className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${textHidden ? "border-warn/50 bg-warn/10 text-warn" : "border-border"}`}>

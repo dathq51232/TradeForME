@@ -121,4 +121,6 @@ declare module "@qt/core/indicators" {
   export const BY_ID: Record<string, IndicatorDef>;
   export function defaults(id: string): Record<string, unknown>;
   export function compute(id: string, bars: Bar[], params?: Record<string, unknown>): Record<string, unknown> & { markers?: Marker[]; priceMarkers?: Marker[] };
+  export function ema(src: number[], n: number): number[];
+  export function rsiOf(src: number[], n?: number): number[];
 }
