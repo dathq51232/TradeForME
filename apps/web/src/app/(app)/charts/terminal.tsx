@@ -20,7 +20,7 @@ import type { CalendarEvent } from "@/app/api/calendar/route";
 export type Overlays = { trades: boolean; events: boolean };
 export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
-export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; depth: number };
+export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; waveUpOnly: boolean; waveColor: string; depth: number };
 export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
@@ -68,7 +68,7 @@ const CANDLE_PRESETS = [
   { label: "Xanh dương / Cam", up: "#4f8cff", down: "#f5a142" },
   { label: "Xám / Đen", up: "#9aa4b2", down: "#000000" },
 ];
-const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; hint: string }[] = [
+const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth" | "waveUpOnly" | "waveColor">; label: string; hint: string }[] = [
   { key: "chart", label: "Mô hình giá", hint: "Tam giác tăng/giảm/cân, tam giác mở rộng (tam giác ngược), nêm, hai đỉnh/hai đáy, vai đầu vai" },
   { key: "wedges", label: "Nêm nhỏ tiếp diễn (báo sớm)", hint: "Sau một nhịp mạnh, giá hồi trong nêm hẹp dần; chấm điểm 0–100 (key level/EMA21, khối lượng, biên độ, RSI) và báo Sẵn sàng trước khi phá" },
   { key: "candles", label: "Mô hình nến", hint: "Búa, sao băng, nhấn chìm, harami, sao mai/sao hôm, ba chàng lính/ba con quạ, nhíp, marubozu…" },
@@ -78,6 +78,11 @@ const AUTO_LAYERS: { key: Exclude<keyof AutoSettings, "depth">; label: string; h
   { key: "elliott", label: "Đếm sóng Elliott", hint: "Sóng đẩy (1)–(5) và điều chỉnh A-B-C gần nhất, theo 3 quy tắc cứng: sóng 2 không thủng đầu sóng 1, sóng 3 không ngắn nhất, sóng 4 không chồng vùng sóng 1. Độ nhạy theo mục Đỉnh/đáy" },
 ];
 const DEPTHS = [{ v: 3, label: "Nhạy" }, { v: 5, label: "Vừa" }, { v: 8, label: "Chặt" }];
+/** Colours for the Elliott impulse path and labels; none of them is the blue of the default EMA lines. */
+export const WAVE_COLORS = [
+  { v: "#e879f9", label: "Tím hồng" }, { v: "#f5d742", label: "Vàng" }, { v: "#ffffff", label: "Trắng" },
+  { v: "#22d3ee", label: "Xanh ngọc" }, { v: "#a3e635", label: "Xanh lá" },
+];
 const STATUS_VI: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 /** Session boxes over the loaded bars: each session's high and low (sessions with no bars are skipped). */
@@ -617,7 +622,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       levels: auto.levels && bs.length ? closeLevels(bs, { max: 6 }) : [],
       periods: auto.periods && bs.length ? periodCloses(bs).filter((p) => step < periodLen[p.period]) : [],
       sessions: auto.sessions && step <= 3600 ? sessionBoxes(bs, step) : [],
-      elliott: auto.elliott && bs.length ? elliottWaves(bs, { depth: auto.depth }) : null,
+      elliott: auto.elliott && bs.length ? elliottWaves(bs, { depth: auto.depth, upOnly: auto.waveUpOnly }) : null,
     };
   }, [rawBars, auto, step]);
   const autoDraw = useMemo<AutoDraw>(() => {
@@ -639,9 +644,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       waves: found.elliott && {
         points: found.elliott.points.map((q) => ({ t: q.time, p: q.price, label: q.label, provisional: q.provisional })),
         target: found.elliott.target,
+        color: auto.waveColor,
       },
     };
-  }, [found, info.digits]);
+  }, [found, info.digits, auto.waveColor]);
   const chartMarkers = useMemo<TimedMarker[]>(() => [
     ...tradeMarkers,
     // candlestick-pattern labels belong to pattern recognition: "Ẩn tất cả" takes them off too
@@ -880,6 +886,23 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                     <span><span className="block text-foreground">{l.label}</span><span className="text-muted">{l.hint}</span></span>
                   </label>
                 ))}
+                {auto.elliott && (
+                  <div className="grid gap-1.5 rounded border border-border px-2 py-1.5">
+                    <span className="text-foreground">Sóng Elliott</span>
+                    <label className="flex cursor-pointer items-start gap-2" title="Theo Elliott, sóng đẩy đi theo xu hướng lớn: thị trường giá xuống có sóng đẩy 1-5 đi xuống và A-B-C là nhịp hồi lên. Bật mục này nếu bạn muốn 1-5 chỉ dùng cho sóng tăng, nhịp giảm luôn đọc là A-B-C.">
+                      <input type="checkbox" className="mt-0.5" checked={auto.waveUpOnly} onChange={(e) => setAuto((a) => ({ ...a, waveUpOnly: e.target.checked }))} />
+                      <span>Chỉ đếm sóng đẩy tăng (1-5 đi lên, nhịp giảm là A-B-C)<span className="block text-muted">Tắt: theo đúng Elliott, sóng đẩy đi theo xu hướng, nên khi thị trường giảm 1-5 sẽ đi xuống</span></span>
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-muted">Màu sóng 1-5</span>
+                      {WAVE_COLORS.map((c) => (
+                        <button key={c.v} onClick={() => setAuto((a) => ({ ...a, waveColor: c.v }))} title={c.label} aria-label={`Màu sóng: ${c.label}`}
+                          className={`h-4 w-4 rounded-full border ${auto.waveColor === c.v ? "border-foreground ring-2 ring-accent" : "border-border"}`} style={{ background: c.v }} />
+                      ))}
+                      <span className="ml-1 text-muted">A-B-C luôn màu cam</span>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-2 px-1">
                   <span className="text-muted">Độ nhạy mô hình giá</span>
                   <span className="flex rounded border border-border">

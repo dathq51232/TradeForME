@@ -120,26 +120,28 @@ function impulseScore(p, dir) {
 const LABELS = ["", "(1)", "(2)", "(3)", "(4)", "(5)", "A", "B", "C"];
 
 /**
- * The current Elliott count on `bars`, or null.
+ * The current Elliott count on `bars`, or null. `upOnly`: impulses are counted only upward (a common way to read a
+ * market), and a fall is read as an A-B-C correction; by default an impulse follows the larger trend either way
+ * (in a falling market, (1)-(5) point down and A-B-C is the bounce), as in Elliott's own rules.
  * @returns {null | {
  *   dir: 1 | -1, stage: "w3" | "w4" | "w5" | "A" | "B" | "C", text: string, score: number,
  *   points: { i: number, time: number, price: number, label: string, provisional: boolean }[],
  *   target: { price: number, label: string } | null
  * }}
  */
-export function elliottWaves(bars, { depth = 5, minAtr = 1.5 } = {}) {
+export function elliottWaves(bars, { depth = 5, minAtr = 1.5, upOnly = false } = {}) {
   // the smallest wave degree that gives a current count; a choppy correction at one degree is often a single wave
   // of the next one up, so the swing filter is widened before giving up
   for (const m of [minAtr, minAtr * 1.75, minAtr * 3]) {
     for (const collapse of [false, true]) {
-      const r = countAt(bars, depth, m, collapse);
+      const r = countAt(bars, depth, m, collapse, upOnly);
       if (r) return r;
     }
   }
   return null;
 }
 
-function countAt(bars, depth, minAtr, collapse) {
+function countAt(bars, depth, minAtr, collapse, upOnly) {
   const piv = wavePivots(bars, { depth, minAtr, collapse });
   if (piv.length < 4) return null;
   const n = piv.length;
@@ -149,6 +151,7 @@ function countAt(bars, depth, minAtr, collapse) {
   for (let s = n - 6; s >= Math.max(0, n - 9); s--) {
     const p = piv.slice(s, s + 6);
     const dir = dirOf(p[0]);
+    if (upOnly && dir < 0) continue;
     const sc = impulseScore(p, dir);
     if (sc == null) continue;
     const after = piv.slice(s + 6);
@@ -168,8 +171,21 @@ function countAt(bars, depth, minAtr, collapse) {
       if (n < k + 1) continue;
       const p = piv.slice(n - k - 1);
       const dir = dirOf(p[0]);
+      if (upOnly && dir < 0) continue;
       const sc = impulseScore(p, dir);
       if (sc != null && sc >= 2) { best = { s: n - k - 1, dir, score: sc, pts: p }; break; }
+    }
+  }
+  // up-only: a fall from a top read as a correction on its own, A-B-C (or A-B so far), ending at the last pivot
+  if (!best && upOnly) {
+    for (const k of [3, 2]) {
+      if (n < k + 1) continue;
+      const p = piv.slice(n - k - 1);
+      if (p[0].kind !== "H") continue;
+      const a = p[0].price - p[1].price, b = p[2].price - p[1].price;
+      if (!(a > 0 && b > 0 && b <= 1.382 * a)) continue;
+      if (k === 3 && !(p[3].price < p[1].price)) continue;
+      return correctionOnly(p);
     }
   }
   if (!best) return null;
@@ -181,11 +197,11 @@ function countAt(bars, depth, minAtr, collapse) {
   const trend = up ? "tăng" : "giảm";
   const live = points[k].provisional ? " (đang chạy)" : "";
   const text = {
-    w3: () => `Sóng đẩy ${trend}: đang ở sóng 3${live}`,
-    w4: () => `Sóng đẩy ${trend}: sóng 4${live}, chờ sóng 5`,
-    w5: () => `Sóng đẩy ${trend} 1-5${live ? " (sóng 5 đang chạy)" : " hoàn tất, chờ điều chỉnh A-B-C"}`,
-    A: () => `Điều chỉnh sau sóng ${trend}: sóng A${live}`,
-    B: () => `Điều chỉnh sau sóng ${trend}: sóng B${live}, chờ C`,
+    w3: () => `Sóng đẩy ${trend.toUpperCase()}: đang ở sóng 3${live}`,
+    w4: () => `Sóng đẩy ${trend.toUpperCase()}: sóng 4${live}, chờ sóng 5`,
+    w5: () => `Sóng đẩy ${trend.toUpperCase()} 1-5${live ? " (sóng 5 đang chạy)" : " hoàn tất, chờ điều chỉnh A-B-C"}`,
+    A: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng A${live}`,
+    B: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng B${live}, chờ C`,
     C: () => `Điều chỉnh A-B-C${live ? " (C đang chạy)" : " hoàn tất"}`,
   }[stage]();
   // one projection, where the next wave usually ends: 5 = 1 in length, C = A in length
@@ -193,4 +209,15 @@ function countAt(bars, depth, minAtr, collapse) {
   if (stage === "w4") target = { price: pts[4].price + (pts[1].price - pts[0].price), label: "Sóng 5 = sóng 1" };
   if (stage === "B") target = { price: pts[7].price - (pts[5].price - pts[6].price), label: "C = A" };
   return { dir, stage, text, score: best.score, points, target };
+}
+
+/** A falling A-B-C (or A-B) after a top, without the impulse before it: labels "", A, B, C. */
+function correctionOnly(p) {
+  const points = p.map((q, k) => ({ i: q.i, time: q.time, price: q.price, label: ["", "A", "B", "C"][k], provisional: !!q.provisional }));
+  const k = p.length - 1;
+  const live = points[k].provisional ? " (đang chạy)" : "";
+  const stage = k === 3 ? "C" : "B";
+  const text = stage === "C" ? `Điều chỉnh giảm A-B-C${live ? " (C đang chạy)" : " hoàn tất"}` : `Điều chỉnh giảm: sóng B${live}, chờ C`;
+  const target = stage === "B" ? { price: p[2].price - (p[0].price - p[1].price), label: "C = A" } : null;
+  return { dir: 1, stage, text, score: 0, points, target };
 }

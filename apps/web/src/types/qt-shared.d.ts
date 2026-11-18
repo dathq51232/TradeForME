@@ -62,7 +62,7 @@ declare module "@qt/core/elliott" {
     dir: 1 | -1; stage: "w3" | "w4" | "w5" | "A" | "B" | "C"; text: string; score: number;
     points: WavePoint[]; target: { price: number; label: string } | null;
   };
-  export function elliottWaves(bars: Bar[], opts?: { depth?: number; minAtr?: number }): ElliottCount | null;
+  export function elliottWaves(bars: Bar[], opts?: { depth?: number; minAtr?: number; upOnly?: boolean }): ElliottCount | null;
   export function wavePivots(bars: Bar[], opts?: { depth?: number; minAtr?: number }): { i: number; time: number; price: number; kind: "H" | "L"; provisional?: boolean }[];
 }
 declare module "@qt/core/series" {

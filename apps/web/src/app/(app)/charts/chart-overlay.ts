@@ -160,10 +160,12 @@ export type AutoDraw = {
   levels: { price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
   /** Elliott count: its turning points with their labels ("" for the start), and one projected level. */
-  waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null } | null;
+  waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string } | null;
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [], waves: null };
-const WAVE_COLOR = { impulse: "#5aa9ff", correction: "#f5a142" };
+const WAVE_COLOR = { impulse: "#e879f9", correction: "#f5a142" };
+/** A-B-C (letters) are the correction; (1)-(5) the impulse. */
+const isCorrection = (label: string) => /^[ABC]$/.test(label);
 export const STATUS_TEXT: Record<string, string> = { forming: "đang hình thành", ready: "sẵn sàng phá", breakoutUp: "đã phá lên", breakoutDown: "đã phá xuống", failed: "thất bại", expired: "hết hiệu lực" };
 
 export class ChartOverlay implements ISeriesPrimitive<Time> {
@@ -408,13 +410,15 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     const w = this.auto.waves;
     if (!w || w.points.length < 2) return;
     const xy = w.points.map((q) => this.xy(q));
+    const impulse = w.color ?? WAVE_COLOR.impulse;
+    const roleColor = (label: string) => (isCorrection(label) ? WAVE_COLOR.correction : impulse);
     ctx.save();
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.5;
     for (let k = 1; k < w.points.length; k++) {
       const a = xy[k - 1], b = xy[k];
       if (!a || !b) continue;
       ctx.globalAlpha = 0.7;
-      ctx.strokeStyle = k > 5 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      ctx.strokeStyle = roleColor(w.points[k].label);
       ctx.setLineDash(w.points[k].provisional ? [4, 4] : []);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     }
@@ -427,7 +431,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       if (!at || !q.label) return;
       const other = w.points[k - 1] ?? w.points[k + 1];
       const top = !other || q.p >= other.p;
-      const color = k > 5 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      const color = roleColor(q.label);
       const r = q.label.length > 1 ? 12 : 9;
       const cy = at.y + (top ? -(r + 5) : r + 5);
       ctx.globalAlpha = q.provisional ? 0.6 : 1;
@@ -443,7 +447,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     const yt = w.target ? this.y(w.target.price) : null;
     if (w.target && last && yt != null) {
       ctx.globalAlpha = 0.8;
-      ctx.strokeStyle = w.points.length > 6 ? WAVE_COLOR.correction : WAVE_COLOR.impulse;
+      ctx.strokeStyle = roleColor(w.points[w.points.length - 1].label);
       ctx.setLineDash([2, 3]);
       ctx.beginPath(); ctx.moveTo(last.x, yt); ctx.lineTo(last.x + 80, yt); ctx.stroke();
       if (this.patternText) {

@@ -72,3 +72,16 @@ test("an expanded flat: wave B may run past the end of wave 5, up to 138.2% of A
   // C = A from B: 136 + 15
   assert.ok(Math.abs(r.target.price - 151) < 1);
 });
+
+test("up-only: a falling market is read as an A-B-C correction, not a falling impulse", () => {
+  const fall = path([200, 180, 192, 150, 162, 140]);
+  assert.equal(elliottWaves(fall)?.dir, -1); // Elliott's default: the impulse follows the trend down
+  const r = elliottWaves(path([150, 200, 170, 185, 160, 161]), { upOnly: true });
+  assert.equal(r?.stage, "C");
+  assert.equal(labels(r), "A B C");
+  const ab = elliottWaves(path([150, 200, 170, 185]), { upOnly: true });
+  assert.equal(ab?.stage, "B");
+  assert.ok(Math.abs(ab.target.price - 155) < 1); // C = A: 185 - 30
+  // an up impulse is still counted 1-5
+  assert.equal(labels(elliottWaves(path([100, 120, 108, 150, 138, 160, 150]), { upOnly: true })), "(1) (2) (3) (4) (5) A");
+});
