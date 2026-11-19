@@ -392,12 +392,19 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     return c.y - (a.y + slope * (c.x - a.x));
   }
 
+  // Two layers. "bottom" is drawn over the chart background and grid but under every series, so the filled areas
+  // (higher-timeframe candles, session boxes) stay behind the candles and indicators. "top" is over the series: in
+  // it, drawBackground (key levels, news lines) goes first and draw (patterns, waves, drawings) last.
+  private under: IPrimitivePaneRenderer = {
+    draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawHtf(s); this.drawSessions(s); }),
+  };
   private renderer: IPrimitivePaneRenderer = {
     draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawPatterns(s); this.drawWaves(s); this.drawShapes(s); }),
-    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawHtf(s); this.drawSessions(s); this.drawLevels(s); this.drawEvents(s); }),
+    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawLevels(s); this.drawEvents(s); }),
   };
+  private underView: IPrimitivePaneView = { zOrder: (): PrimitivePaneViewZOrder => "bottom", renderer: () => this.under };
   private view: IPrimitivePaneView = { zOrder: (): PrimitivePaneViewZOrder => "top", renderer: () => this.renderer };
-  paneViews() { return [this.view]; }
+  paneViews() { return [this.underView, this.view]; }
 
   /**
    * Higher-timeframe candles: a faint body box over the bars it spans, its wick a line down the middle, and the
