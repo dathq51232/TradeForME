@@ -68,6 +68,8 @@ declare module "@qt/core/elliott" {
 declare module "@qt/core/series" {
   export function parseTf(tf: string): { n: number; unit: string; seconds: number };
   export function isIntraday(tf: string): boolean;
+  /** Start (UTC seconds) of the bucket of timeframe `tf` that time `t` falls in. */
+  export function bucketStart(t: number, tf: string): number;
   export function resample(bars: Bar[], tf: string): Bar[];
   export function nativeBase(tf: string, natives: string[]): string | null;
 }

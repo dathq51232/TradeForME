@@ -1,7 +1,7 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
-  SYMBOLS, TIMEFRAMES, quoteFromDaily, quoteFromTicker, tickerStreamUrl, spotUsdFactor, scaleBars, fetchSpotUsdFactor, USD_PROXY_TICKER, binanceInterval, tfSeconds, parseBinance, usesFutures,
+  SYMBOLS, TIMEFRAMES, quoteFromDaily, quoteFromTicker, tickerStreamUrl, spotUsdFactor, fetchSpotUsdFactor, USD_PROXY_TICKER, tfSeconds, usesFutures,
   BINANCE_SPOT_HOST, BINANCE_SPOT_STREAM, BINANCE_FUTURES_HOST, BINANCE_FUTURES_STREAM,
 } from "@qt/shared/market";
 import { INDICATORS, BY_ID, defaults } from "@qt/core/indicators";
@@ -10,7 +10,9 @@ import { PanelToggle } from "@/components/panel-toggle";
 import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
-import { createLiveBar, useLiveBar, withLive, type LiveBarStore, type LiveState } from "./live-bar";
+import { useLiveBar, withLive, type LiveBarStore, type LiveState } from "./live-bar";
+import { autoHtf, largerTimeframes, liveSocket, useBarsFeed, useHtfBars } from "./feed";
+import { TEMPLATE_PREFIX, cleanTemplate, type ChartTemplate, type TemplateState } from "./layout-state";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, PRICE_LINE_DEFAULT, type LayerKey, type LayerStyle, type LayerDash, type LineDash, type OutputStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
@@ -19,10 +21,13 @@ import type { TradesResponse } from "@/app/api/trades/route";
 import type { CalendarEvent } from "@/app/api/calendar/route";
 
 export type Overlays = { trades: boolean; events: boolean };
-export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle };
+/** htf: higher-timeframe candles behind the chart ("auto" = the next larger timeframe, null = off). */
+export type ChartView = { type: ChartType; scale: ScaleMode; magnet: boolean; style: ChartStyle; htf: string | null; htfOpacity: number };
+/** A second chart beside the main one: its own symbol and timeframe, the main chart's look. */
+export type SplitChart = { symbol: string; tf: string; sameIndicators: boolean };
 /** Automatic chart reading: which layers are on, and pivot strength (bars each side) for chart patterns. */
 export type AutoSettings = { chart: boolean; wedges: boolean; candles: boolean; levels: boolean; periods: boolean; sessions: boolean; elliott: boolean; waveUpOnly: boolean; waveColor: string; depth: number; styles: Partial<Record<LayerKey, LayerStyle>> };
-export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings };
+export type LayoutState = { symbol: string; tf: string; indicators: ActiveIndicator[]; overlays: Overlays; view: ChartView; auto: AutoSettings; split: SplitChart | null };
 export type SymbolDrawings = { id: string; hlines: number[]; shapes: Shape[] };
 export type PriceAlert = { id: string; symbol: string; price: number; op: "above" | "below" };
 type Initial = {
@@ -30,8 +35,8 @@ type Initial = {
   watchlist: string[]; watchlistId: string | null;
   drawings: Record<string, SymbolDrawings>;
   alerts: PriceAlert[];
+  templates: ChartTemplate[];
 };
-type BarsResponse = { bars: Bar[]; source: string; realtime: boolean; factor?: number; note?: string; error?: string };
 
 const NO_INDICATORS: ActiveIndicator[] = [];
 // Indicators that need anchors or draw boxes/profiles are left out of the menu.
@@ -63,6 +68,7 @@ const RANGES: { label: string; seconds: number | null }[] = [
   { label: "Tất cả", seconds: null },
 ];
 const HISTORY = 50;
+const TEMPLATES_KEY = "qt-chart-templates";
 const CANDLE_PRESETS = [
   { label: "Xanh / Đỏ", up: "#00c087", down: "#f45b69" },
   { label: "Trắng / Đen", up: "#ffffff", down: "#000000" },
@@ -192,72 +198,6 @@ async function fetchJson<T>(url: string, fallback: T): Promise<T> {
     return r.ok ? ((await r.json()) as T) : fallback;
   } catch { return fallback; }
 }
-/** Perpetual klines straight from Binance in the browser (CORS open): used when the server could not reach fapi
- * (it answers 451 from US cloud regions) and only had Yahoo's delayed prices. */
-async function fetchFuturesBars(ticker: string, tf: string, limit: number): Promise<BarsResponse | null> {
-  try {
-    const r = await fetch(`${BINANCE_FUTURES_HOST}/fapi/v1/klines?symbol=${ticker}&interval=${binanceInterval(tf)}&limit=${Math.min(limit, 1500)}`);
-    if (!r.ok) return null;
-    const [bars, factor] = await Promise.all([parseBinance(await r.json()), fetchSpotUsdFactor(fetch, ticker)]);
-    return bars.length ? {
-      bars: scaleBars(bars, factor), source: `Binance Futures ${ticker}`, realtime: true, factor: factor ?? 1,
-      note: factor
-        ? `${ticker} quy đổi về USD giao ngay (bỏ chênh hợp đồng vĩnh cửu và tỷ giá USDT): còn lệch broker khoảng spread.`
-        : `${ticker}: giá USDT của hợp đồng vĩnh cửu, chưa quy đổi được về USD: có thể lệch broker vài giá.`,
-    } : null;
-  } catch { return null; }
-}
-async function fetchBars(symbol: string, tf: string, limit: number): Promise<BarsResponse> {
-  let res: BarsResponse;
-  try {
-    const r = await fetch(`/api/bars?symbol=${symbol}&tf=${tf}&limit=${limit}`);
-    const j: BarsResponse = await r.json();
-    res = r.ok ? j : { bars: [], source: "", realtime: false, error: j.error ?? `HTTP ${r.status}` };
-  } catch (e) {
-    res = { bars: [], source: "", realtime: false, error: (e as Error).message };
-  }
-  const info = SYMBOLS[symbol];
-  if (!res.realtime && info?.futures && usesFutures(info, tf)) return (await fetchFuturesBars(info.futures, tf, limit)) ?? res;
-  return res;
-}
-/** Websocket for the live candle: Binance spot or futures, whichever the bars came from; null = poll the API. */
-function streamUrl(source: string | undefined, tf: string) {
-  const m = /^Binance (Futures )?([A-Z0-9]+)/.exec(source ?? "");
-  if (!m) return null;
-  return `${m[1] ? BINANCE_FUTURES_STREAM : BINANCE_SPOT_STREAM}${m[2].toLowerCase()}@kline_${binanceInterval(tf)}`;
-}
-/**
- * A websocket that comes back by itself: Binance drops connections after 24 h and on network blips. Reconnects with
- * a growing delay (1 s up to 30 s), also when no message came for `staleMs` (a socket that is open but silent).
- * Returns the close function.
- */
-function liveSocket(url: string, onMessage: (data: unknown) => void, staleMs = 60_000) {
-  let ws: WebSocket | null = null;
-  let closed = false;
-  let delay = 1000;
-  let retry: ReturnType<typeof setTimeout> | undefined;
-  let lastMsg = Date.now();
-  const open = () => {
-    if (closed) return;
-    lastMsg = Date.now();
-    ws = new WebSocket(url);
-    ws.onmessage = (ev) => {
-      lastMsg = Date.now();
-      delay = 1000;
-      try { onMessage(JSON.parse(ev.data)); } catch { /* not JSON: ignore */ }
-    };
-    ws.onclose = () => {
-      if (closed) return;
-      retry = setTimeout(open, delay);
-      delay = Math.min(delay * 2, 30_000);
-    };
-  };
-  const watchdog = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsg > staleMs) ws.close();
-  }, 10_000);
-  open();
-  return () => { closed = true; clearTimeout(retry); clearInterval(watchdog); ws?.close(); };
-}
 /**
  * Live perpetual -> spot USD multipliers (see spotUsdFactor) for the given futures tickers, kept in `out`:
  * a REST snapshot first, then each perpetual's `@markPrice@1s` stream (mark p, index i) and USDC/USDT's ticker.
@@ -336,6 +276,150 @@ function LiveBrief({ live, liveKey, bars, ...rest }: Omit<Parameters<typeof Mark
   return <MarketBrief bars={merged} {...rest} />;
 }
 
+/** Saved templates: apply one to the current symbol, delete it, or save the current setup under a name. */
+function TemplateMenu({ templates, signedIn, onSave, onApply, onDelete, onClose }: {
+  templates: ChartTemplate[]; signedIn: boolean;
+  onSave: (name: string) => Promise<boolean>; onApply: (t: ChartTemplate) => void; onDelete: (t: ChartTemplate) => void; onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    if (await onSave(name)) setName("");
+    setBusy(false);
+  };
+  return (
+    <div className="absolute left-0 z-20 mt-1 grid w-72 max-w-[90vw] gap-2 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+      <div className="text-muted">Mẫu đã lưu</div>
+      {templates.length === 0 && <p className="text-muted/80">Chưa có mẫu nào. Lưu bộ chỉ báo, màu biểu đồ và lớp tự nhận diện hiện tại để dùng lại cho mã khác.</p>}
+      {templates.length > 0 && (
+        <ul className="grid max-h-60 gap-0.5 overflow-y-auto">
+          {templates.map((t) => (
+            <li key={t.id} className="group flex items-center gap-1 rounded hover:bg-panel-2">
+              <button onClick={() => onApply(t)} className="min-w-0 flex-1 truncate px-1.5 py-1 text-left"
+                title={`Áp dụng mẫu: ${t.state.indicators.length} chỉ báo${t.state.view.htf ? " · nến khung lớn" : ""}`}>
+                {t.name}<span className="ml-1 text-muted">· {t.state.indicators.length} chỉ báo</span>
+              </button>
+              <button onClick={() => onDelete(t)} className="px-1.5 text-muted opacity-0 hover:text-down focus:opacity-100 group-hover:opacity-100" title="Xoá mẫu" aria-label={`Xoá mẫu ${t.name}`}>×</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="text-muted">Lưu thiết lập hiện tại thành mẫu</div>
+      <form className="flex gap-1" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder="Tên mẫu, vd. Scalp vàng" className="min-w-0 flex-1" aria-label="Tên mẫu" />
+        <button type="submit" disabled={!name.trim() || busy} className="rounded bg-accent px-2 py-1 text-white disabled:opacity-50">Lưu</button>
+      </form>
+      <p className="text-muted/80">
+        Mẫu gồm chỉ báo (tham số, màu, nét), kiểu và màu biểu đồ, nến khung lớn và lớp tự nhận diện. Không gồm mã, khung thời gian và hình vẽ.
+        {signedIn ? "" : " Chưa đăng nhập: mẫu chỉ lưu trên trình duyệt này."}
+      </p>
+      <button onClick={onClose} className="rounded border border-border px-2 py-1 hover:bg-panel-2">Đóng</button>
+    </div>
+  );
+}
+
+const HTF_OPACITY = [{ v: 0.5, label: "Nhạt" }, { v: 1, label: "Vừa" }, { v: 1.6, label: "Đậm" }];
+const tfLabel = (tf: string | null) => TIMEFRAMES.find((t) => t.tf === tf)?.label ?? tf ?? "";
+/** The higher timeframe a chart at `tf` draws behind its candles, or null. */
+const htfFor = (view: ChartView, tf: string) =>
+  view.htf === "auto" ? autoHtf(tf) : view.htf && tfSeconds(view.htf) > tfSeconds(tf) ? view.htf : null;
+/** Higher-timeframe bars for a chart, ready for PriceChart's `htf` prop. */
+function useHtf(symbol: string, tf: string, view: ChartView) {
+  const htfTf = htfFor(view, tf);
+  const bars = useHtfBars(symbol, tf, htfTf);
+  return useMemo(() => (htfTf && bars ? { tf: htfTf, bars, label: tfLabel(htfTf), opacity: view.htfOpacity } : null), [htfTf, bars, view.htfOpacity]);
+}
+
+/** Which higher timeframe to draw behind the chart, and how strongly. */
+function HtfMenu({ tf, view, onChange, onClose }: { tf: string; view: ChartView; onChange: (patch: Partial<ChartView>) => void; onClose: () => void }) {
+  const larger = largerTimeframes(tf);
+  const auto = autoHtf(tf);
+  const opt = (v: string | null, text: string, hint?: string) => (
+    <button key={v ?? "off"} onClick={() => onChange({ htf: v })} title={hint}
+      className={`rounded border px-1.5 py-1 ${view.htf === v ? "border-accent bg-accent/15 text-foreground" : "border-border text-muted hover:text-foreground"}`}>{text}</button>
+  );
+  return (
+    <div className="absolute left-0 z-20 mt-1 grid w-72 max-w-[90vw] gap-2 rounded-md border border-border bg-panel p-2 text-xs shadow-xl">
+      <div className="text-muted">Vẽ nến khung lớn mờ phía sau nến khung hiện tại</div>
+      {larger.length === 0 ? <p className="text-muted/80">Khung {tfLabel(tf)} là khung lớn nhất.</p> : (
+        <div className="flex flex-wrap gap-1">
+          {opt(null, "Tắt")}
+          {auto && opt("auto", `Tự động (${tfLabel(auto)})`, "Khung lớn kế tiếp chứa ít nhất 4 nến khung hiện tại; tự đổi khi bạn đổi khung")}
+          {larger.map((t) => opt(t.tf, t.label))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span className="text-muted">Độ đậm</span>
+        <span className="flex rounded border border-border">
+          {HTF_OPACITY.map((o) => (
+            <button key={o.v} onClick={() => onChange({ htfOpacity: o.v })}
+              className={`px-2 py-0.5 ${view.htfOpacity === o.v ? "bg-accent text-white" : "text-muted hover:text-foreground"}`}>{o.label}</button>
+          ))}
+        </span>
+      </div>
+      <p className="text-muted/80">Mỗi nến lớn là một hộp thân với bấc ở giữa, cùng màu tăng/giảm của biểu đồ. Nến lớn đang chạy cập nhật theo giá realtime; 3 nến lớn gần nhất ghi % thay đổi.</p>
+      <button onClick={onClose} className="rounded bg-accent px-2 py-1 text-white">Xong</button>
+    </div>
+  );
+}
+
+const NO_EVENTS: ChartEvent[] = [];
+const NO_MARKERS: TimedMarker[] = [];
+const NO_LINES: PriceLineSpec[] = [];
+const NO_SHAPES: Shape[] = [];
+const noop = () => {};
+
+/**
+ * The second chart beside the main one: its own symbol and timeframe (its own bars and live candle), the main
+ * chart's look and, if chosen, its indicators. Drawings of that symbol are shown, not edited.
+ */
+function SideChart({ split, onChange, onClose, onSwap, view, indicators, usdFactors, drawings }: {
+  split: SplitChart; onChange: (s: SplitChart) => void; onClose: () => void; onSwap: () => void;
+  view: ChartView; indicators: ActiveIndicator[]; usdFactors: RefObject<Record<string, number>>; drawings: SymbolDrawings | undefined;
+}) {
+  const info = SYMBOLS[split.symbol];
+  const { data, loading, live, streamKey, step, key } = useBarsFeed(split.symbol, split.tf, usdFactors);
+  const htf = useHtf(split.symbol, split.tf, view);
+  const hlines = useMemo(() => (drawings?.hlines ?? []).map((price) => ({ price, alert: false })), [drawings]);
+  const bars = data?.bars ?? NO_BARS;
+  return (
+    <div className="flex h-[65vh] min-h-[420px] flex-col border-t border-border lg:h-auto lg:min-w-0 lg:flex-1 lg:border-l lg:border-t-0">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1 text-xs">
+        <select aria-label="Mã của biểu đồ thứ hai" value={split.symbol} onChange={(e) => onChange({ ...split, symbol: e.target.value })} className="py-0.5 text-xs font-semibold">
+          {Object.keys(SYMBOLS).map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <LivePrice bars={bars} live={live} liveKey={streamKey} digits={info.digits} />
+        <select aria-label="Khung thời gian của biểu đồ thứ hai" value={split.tf} onChange={(e) => onChange({ ...split, tf: e.target.value })} className="py-0.5 text-xs">
+          {TIMEFRAMES.map((t) => <option key={t.tf} value={t.tf}>{t.label}</option>)}
+        </select>
+        <label className="flex cursor-pointer items-center gap-1 text-muted" title="Dùng cùng bộ chỉ báo với biểu đồ chính">
+          <input type="checkbox" checked={split.sameIndicators} onChange={(e) => onChange({ ...split, sameIndicators: e.target.checked })} /> Cùng chỉ báo
+        </label>
+        {htf && <span className="text-muted" title="Nến khung lớn phía sau">🕯 {htf.label}</span>}
+        {data?.source && (
+          <span className={`rounded border px-1 py-0.5 ${data.realtime ? "border-up/40 text-up" : "border-warn/40 text-warn"}`} title={`Nguồn: ${data.source}`}>
+            {data.realtime ? "● Realtime" : "▲ Trễ"}
+          </span>
+        )}
+        <span className="ml-auto flex gap-0.5">
+          <button onClick={onSwap} title="Đổi chỗ với biểu đồ chính" className="rounded px-1.5 py-0.5 text-muted hover:bg-panel-2 hover:text-foreground">⇄</button>
+          <button onClick={onClose} title="Đóng biểu đồ thứ hai" aria-label="Đóng biểu đồ thứ hai" className="rounded px-1.5 py-0.5 text-muted hover:bg-panel-2 hover:text-down">×</button>
+        </span>
+      </div>
+      <div className="relative min-h-0 flex-1">
+        <PriceChart bars={bars} digits={info.digits} barSeconds={step} indicators={split.sameIndicators ? indicators : NO_INDICATORS}
+          chartType={view.type} scaleMode={view.scale} magnet={false} style={view.style}
+          hlines={hlines} shapes={drawings?.shapes ?? NO_SHAPES} hidden={false} selected={null} events={NO_EVENTS} auto={NO_AUTO} tradeMarkers={NO_MARKERS} tradeLines={NO_LINES}
+          tool={null} onAddLine={noop} onAddShape={noop} onSelect={noop} onChangeShape={noop} viewKey={key} htf={htf}
+          live={live} liveKey={streamKey} />
+        {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {split.symbol}…</div>}
+        {!loading && data?.error && <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>}
+      </div>
+    </div>
+  );
+}
+
 export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedIn: boolean }) {
   const [symbol, setSymbol] = useState(initial.layout.symbol);
   const [tf, setTf] = useState(initial.layout.tf);
@@ -344,9 +428,6 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [watchlist, setWatchlist] = useState(initial.watchlist);
   const [drawings, setDrawings] = useState(initial.drawings);
   const [alerts, setAlerts] = useState(initial.alerts);
-  const [data, setData] = useState<BarsResponse | null>(null);
-  const [loadedKey, setLoadedKey] = useState("");
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [tool, setTool] = useState<Tool>(null);
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
@@ -359,6 +440,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const [notice, setNotice] = useState("");
   const [view, setView] = useState<ChartView>(initial.layout.view);
   const [auto, setAuto] = useState<AutoSettings>(initial.layout.auto);
+  const [split, setSplit] = useState<SplitChart | null>(initial.layout.split);
+  const [templates, setTemplates] = useState<ChartTemplate[]>(initial.templates);
+  const [tplMenu, setTplMenu] = useState(false);
+  const [htfMenu, setHtfMenu] = useState(false);
   const [autoMenu, setAutoMenu] = useState(false);
   const [styleFor, setStyleFor] = useState<LayerKey | null>(null);
   const layerStyle = (k: LayerKey): LayerStyle => ({ ...LAYER_STYLE_DEFAULT, ...auto.styles?.[k] });
@@ -401,80 +486,13 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const supabase = useMemo(() => (signedIn ? createClient() : null), [signedIn]);
   const ids = useRef({ layout: initial.layoutId, watchlist: initial.watchlistId });
 
-  // ---------- bars: load, then keep fresh ----------
-  const tfInfo = TIMEFRAMES.find((t) => t.tf === tf) ?? TIMEFRAMES[3];
-  const key = `${symbol}:${tf}`;
-  const loading = loadedKey !== key;
-  const load = useCallback((quiet = false) => {
-    let alive = true;
-    fetchBars(symbol, tf, tfInfo.bars).then((res) => {
-      if (!alive || (quiet && res.error)) return;
-      setData(res);
-      setUpdatedAt(Date.now());
-      setLoadedKey(`${symbol}:${tf}`);
-    });
-    return () => { alive = false; };
-  }, [symbol, tf, tfInfo.bars]);
-
-  useEffect(() => load(), [load]);
-  // the forming candle, outside React state (see live-bar.ts); the stream handler reads the bars it applies to
-  const [live] = useState(createLiveBar);
-  const dataRef = useRef(data);
-  useEffect(() => { dataRef.current = data; }, [data]);
-
-  // Binance spot (crypto) and futures (gold, silver, oil intraday): kline stream in the browser, no server cost.
-  // Others (broker bars, Yahoo): poll the cached API; broker bars arrive every minute, so a little faster.
-  const stream = streamUrl(data?.source, tf);
-  const step = tfSeconds(tf);
+  // ---------- bars: load, then keep fresh (feed.ts) ----------
   // gold, silver, oil from the USDT perpetual: shown in spot USD like MT5's XAUUSD (liveSpotUsdFactors)
   const usdFactors = useRef<Record<string, number>>({});
-  const futTickers = [...new Set([...watchlist, symbol].filter((s) => SYMBOLS[s]?.futures && !SYMBOLS[s]?.binance).map((s) => SYMBOLS[s].futures!))].sort().join(",");
+  const futTickers = [...new Set([...watchlist, symbol, ...(split ? [split.symbol] : [])].filter((s) => SYMBOLS[s]?.futures && !SYMBOLS[s]?.binance).map((s) => SYMBOLS[s].futures!))].sort().join(",");
   useEffect(() => liveSpotUsdFactors(futTickers ? futTickers.split(",") : [], usdFactors.current), [futTickers]);
-  const streamFut = /^Binance Futures ([A-Z0-9]+)/.exec(data?.source ?? "")?.[1];
-  const streamFactor = data?.factor;
-  const pollMs = data?.source.startsWith("Giá broker") ? 10_000 : 30_000;
-  useEffect(() => {
-    if (!stream) {
-      let cancel = () => {};
-      const t = setInterval(() => { cancel = load(true); }, pollMs);
-      return () => { clearInterval(t); cancel(); };
-    }
-    let pending: Bar | null = null;
-    let reloadedAt = 0;
-    const close = liveSocket(stream, (msg) => {
-      const k = (msg as { k?: { t: number; o: string; h: string; l: string; c: string; v: string } }).k;
-      if (!k) return;
-      const f = (streamFut && usdFactors.current[streamFut]) || streamFactor || 1;
-      pending = { time: k.t / 1000, open: +k.o * f, high: +k.h * f, low: +k.l * f, close: +k.c * f, volume: +k.v };
-    });
-    // apply at most twice a second: indicators are recomputed on every update. The forming candle goes to the live
-    // store (only the chart, price and brief re-render); page state changes only when a new candle opens.
-    const t = setInterval(() => {
-      if (!pending) return;
-      const bar = pending; pending = null;
-      const d = dataRef.current;
-      const last = d?.bars[d.bars.length - 1];
-      if (!last || bar.time < last.time) return;
-      if (bar.time === last.time) { live.set(stream, bar); return; }
-      // candles missed while the socket was down: fetch the bars again instead of leaving a hole
-      if (bar.time > last.time + step) {
-        if (Date.now() - reloadedAt > 30_000) { reloadedAt = Date.now(); cancelLoad = load(true); }
-        return;
-      }
-      // a new candle: the one that closed keeps its last streamed values
-      const closed = live.get();
-      setData((d) => {
-        if (!d || !d.bars.length) return d;
-        const bs = withLive(d.bars, stream, closed);
-        const l = bs[bs.length - 1];
-        if (bar.time < l.time) return d;
-        return { ...d, bars: bar.time === l.time ? [...bs.slice(0, -1), bar] : [...bs.slice(1), bar] };
-      });
-      setUpdatedAt(Date.now());
-    }, 500);
-    let cancelLoad = () => {};
-    return () => { clearInterval(t); close(); cancelLoad(); };
-  }, [stream, pollMs, load, step, streamFut, streamFactor, live]);
+  const { data, loading, updatedAt, live, stream, streamKey, step, tfInfo, key } = useBarsFeed(symbol, tf, usdFactors);
+  const htf = useHtf(symbol, tf, view);
 
   // ---------- copy-trade activity and economic calendar for this symbol ----------
   useEffect(() => {
@@ -523,7 +541,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     const daily = async (s: string) => {
       try {
         const r = await fetch(`/api/bars?symbol=${s}&tf=1D&limit=2`);
-        const j: BarsResponse = await r.json();
+        const j: { bars: Bar[] } = await r.json();
         return r.ok ? quoteFromDaily(j.bars) : null;
       } catch { return null; }
     };
@@ -566,7 +584,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
-      const state = { symbol, tf, indicators, overlays, view, auto };
+      const state = { symbol, tf, indicators, overlays, view, auto, split };
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return setSaveState("error");
       const res = ids.current.layout
@@ -575,7 +593,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       if (!ids.current.layout && res.data && "id" in res.data) ids.current.layout = res.data.id as string;
       setSaveState(res.error ? "error" : "saved");
     }, 800);
-  }, [symbol, tf, indicators, overlays, view, auto, supabase]);
+  }, [symbol, tf, indicators, overlays, view, auto, split, supabase]);
 
   const saveWatchlist = async (list: string[]) => {
     setWatchlist(list);
@@ -587,6 +605,79 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       const { data: row } = await supabase.from("watchlists").insert({ user_id: auth.user.id, name: "Mặc định", symbols: list }).select("id").single();
       if (row) ids.current.watchlist = row.id;
     }
+  };
+
+  // ---------- second chart beside the main one ----------
+  const openSplit = (sym?: string) => {
+    const other = sym ?? watchlist.find((s) => s !== symbol) ?? Object.keys(SYMBOLS).find((s) => s !== symbol)!;
+    setSplit((sp) => ({ symbol: other, tf: sp?.tf ?? tf, sameIndicators: sp?.sameIndicators ?? true }));
+  };
+  const swapSplit = () => {
+    if (!split) return;
+    setSplit({ ...split, symbol, tf });
+    setSymbol(split.symbol); setTf(split.tf); setTool(null); setSelected(null);
+  };
+
+  // ---------- templates: indicators, chart look and automatic reading, saved by name (layout.ts) ----------
+  // signed in: rows of the layouts table (name "template:…"); signed out: this browser only
+  useEffect(() => {
+    if (signedIn) return;
+    try {
+      const raw: unknown = JSON.parse(window.localStorage.getItem(TEMPLATES_KEY) ?? "[]");
+      const list = Array.isArray(raw) ? raw.flatMap((t: { id?: unknown; name?: unknown; state?: unknown }) => {
+        const c = cleanTemplate(t?.id, t?.name, t?.state);
+        return c ? [c] : [];
+      }) : [];
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount: storage is not there on the server
+      if (list.length) setTemplates(list);
+    } catch { /* storage blocked or bad JSON: no templates */ }
+  }, [signedIn]);
+  const keepLocal = (list: ChartTemplate[]) => {
+    try { window.localStorage.setItem(TEMPLATES_KEY, JSON.stringify(list)); } catch { /* storage blocked: this visit only */ }
+  };
+  const byName = (a: ChartTemplate, b: ChartTemplate) => a.name.localeCompare(b.name, "vi");
+  const saveTemplate = async (raw: string) => {
+    const name = raw.trim().slice(0, 40);
+    if (!name) return false;
+    const state: TemplateState = { indicators, overlays, view, auto };
+    const old = templates.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (old && !window.confirm(`Đã có mẫu “${old.name}”. Ghi đè bằng thiết lập hiện tại?`)) return false;
+    if (!supabase) {
+      const next = [...templates.filter((t) => t.id !== old?.id), { id: old?.id ?? uid(), name, state }].sort(byName);
+      setTemplates(next); keepLocal(next);
+      setNotice(`💾 Đã lưu mẫu “${name}” trên trình duyệt này. Đăng nhập để mẫu đi theo tài khoản.`);
+      return true;
+    }
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) { setNotice("Phiên đăng nhập đã hết, tải lại trang để lưu mẫu."); return false; }
+    const row = { name: TEMPLATE_PREFIX + name, state, updated_at: new Date().toISOString() };
+    const res = old
+      ? await supabase.from("layouts").update(row).eq("id", old.id).select("id").single()
+      : await supabase.from("layouts").insert({ user_id: auth.user.id, ...row }).select("id").single();
+    if (res.error || !res.data) { setNotice(`Không lưu được mẫu: ${res.error?.message ?? ""}`); return false; }
+    const id = res.data.id as string;
+    setTemplates((ts) => [...ts.filter((t) => t.id !== old?.id), { id, name, state }].sort(byName));
+    setNotice(`💾 Đã lưu mẫu “${name}”.`);
+    return true;
+  };
+  /** The template's indicators, look and automatic reading on the current symbol and timeframe. */
+  const applyTemplate = (t: ChartTemplate) => {
+    setIndicators(t.state.indicators.map((i) => ({ ...i, uid: uid() })));
+    setOverlays(t.state.overlays);
+    setView((v) => ({ ...t.state.view, magnet: v.magnet }));
+    setAuto(t.state.auto);
+    setEditing(null); setTplMenu(false);
+    setNotice(`Đã áp dụng mẫu “${t.name}”.`);
+  };
+  const deleteTemplate = async (t: ChartTemplate) => {
+    if (!window.confirm(`Xoá mẫu “${t.name}”?`)) return;
+    if (supabase) {
+      const { error } = await supabase.from("layouts").delete().eq("id", t.id);
+      if (error) return setNotice(`Không xoá được mẫu: ${error.message}`);
+    }
+    const next = templates.filter((x) => x.id !== t.id);
+    setTemplates(next);
+    if (!supabase) keepLocal(next);
   };
 
   // ---------- drawings: horizontal lines and shapes, one row per symbol ----------
@@ -762,7 +853,6 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   // closed candles plus the forming one as of the last new candle or reload; live ticks are merged in by the
   // subscribers (LivePrice, LiveBrief, PriceChart) and, every 5 s, by the detectors
   const bars = data?.bars ?? NO_BARS;
-  const streamKey = stream ?? "";
   const filtered = MENU.filter((d) => !query || d.name.toLowerCase().includes(query.toLowerCase()) || d.id.includes(query.toLowerCase()));
   const notInList = Object.keys(SYMBOLS).filter((s) => !watchlist.includes(s));
   const activeTool = TOOLS.find((t) => t.id === tool);
@@ -871,6 +961,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                     {q && <span className={q.changePct >= 0 ? "text-up" : "text-down"}>{q.changePct >= 0 ? "+" : ""}{q.changePct.toFixed(2)}%</span>}
                   </span>
                 </button>
+                <button onClick={() => openSplit(s)} title="Mở mã này ở biểu đồ thứ hai, bên cạnh"
+                  className="absolute bottom-0 right-0 hidden px-1 text-xs text-muted hover:text-accent group-hover:block">⧉</button>
                 {watchlist.length > 1 && (
                   <button onClick={() => saveWatchlist(watchlist.filter((x) => x !== s))} title="Bỏ khỏi watchlist"
                     className="absolute right-0 top-0 hidden px-1 text-xs text-muted hover:text-down group-hover:block">×</button>
@@ -1040,6 +1132,21 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               </div>
             )}
           </div>
+          <div className="relative">
+            <button onClick={() => setHtfMenu((m) => !m)} title="Hiện nến của khung thời gian lớn hơn phía sau nến khung hiện tại, để thấy rõ xu hướng"
+              className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${htf ? "border-accent/50 text-accent" : "border-border text-muted hover:text-foreground"}`}>
+              🕯 {htf ? `Nến ${htf.label}` : "Nến khung lớn"}
+            </button>
+            {htfMenu && <HtfMenu tf={tf} view={view} onChange={(patch) => setView((v) => ({ ...v, ...patch }))} onClose={() => setHtfMenu(false)} />}
+          </div>
+          <div className="relative">
+            <button onClick={() => setTplMenu((m) => !m)} title="Lưu thiết lập hiện tại thành mẫu, hoặc áp dụng mẫu đã lưu"
+              className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:bg-panel-2 hover:text-foreground">📑 Mẫu{templates.length ? ` (${templates.length})` : ""}</button>
+            {tplMenu && <TemplateMenu templates={templates} signedIn={signedIn} onSave={saveTemplate} onApply={applyTemplate} onDelete={(t) => void deleteTemplate(t)} onClose={() => setTplMenu(false)} />}
+          </div>
+          <button onClick={() => (split ? setSplit(null) : openSplit())} aria-pressed={!!split}
+            title={split ? "Đóng biểu đồ thứ hai" : "Mở thêm một biểu đồ của mã khác bên cạnh"}
+            className={`rounded-md border px-2 py-1 text-xs hover:bg-panel-2 ${split ? "border-accent/50 text-accent" : "border-border text-muted hover:text-foreground"}`}>⧉ 2 biểu đồ</button>
           <div className="flex rounded-md border border-border text-xs">
             <button onClick={screenshot} title="Tải ảnh biểu đồ (PNG)" className="px-2 py-1 text-muted hover:text-foreground">📷</button>
             <button onClick={fullscreen} title="Toàn màn hình" className="px-2 py-1 text-muted hover:text-foreground">⛶</button>
@@ -1266,16 +1373,22 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           </div>
         )}
 
-        <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:flex-1">
+        <div className="flex flex-col lg:min-h-0 lg:flex-1 lg:flex-row">
+        <div className="relative h-[65vh] min-h-[420px] lg:h-auto lg:min-w-0 lg:flex-1">
           <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indHidden ? NO_INDICATORS : indicators}
             chartType={view.type} scaleMode={view.scale} magnet={view.magnet} style={view.style}
             hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={indHidden ? NO_AUTO : autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines} patternText={!textHidden}
             tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key}
-            live={live} liveKey={streamKey} />
+            live={live} liveKey={streamKey} htf={htf} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (
             <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>
           )}
+        </div>
+        {split && (
+          <SideChart split={split} onChange={setSplit} onClose={() => setSplit(null)} onSwap={swapSplit}
+            view={view} indicators={indHidden ? NO_INDICATORS : indicators} usdFactors={usdFactors} drawings={drawings[split.symbol]} />
+        )}
         </div>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-3 py-1.5 text-xs text-muted">

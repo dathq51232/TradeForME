@@ -1,12 +1,9 @@
 import { Suspense } from "react";
-import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
-import { BY_ID } from "@qt/core/indicators";
+import { SYMBOLS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { createClient } from "@/lib/supabase/server";
-import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, cleanOutputStyles, cleanPriceLine, type Shape } from "./chart-overlay";
-import { DEFAULT_STYLE } from "./chart-overlay";
-
-const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+import { ChartTerminal, type PriceAlert, type SymbolDrawings } from "./terminal";
+import { SHAPE_KINDS, SHAPE_POINTS, type Shape } from "./chart-overlay";
+import { DEFAULT_LAYOUT, TEMPLATE_PREFIX, cleanLayout, cleanTemplate, type ChartTemplate } from "./layout-state";
 
 export default function ChartsPage(props: PageProps<"/charts">) {
   return (
@@ -16,62 +13,9 @@ export default function ChartsPage(props: PageProps<"/charts">) {
   );
 }
 
-const DEFAULT_LAYOUT: LayoutState = {
-  symbol: "XAUUSD", tf: "1h",
-  indicators: [{ uid: "ema20", id: "ema", params: { length: 20, source: "close" } }, { uid: "rsi", id: "rsi", params: {} }],
-  overlays: { trades: true, events: true },
-  view: { type: "candles", scale: "normal", magnet: false, style: DEFAULT_STYLE },
-  auto: { chart: true, wedges: true, candles: true, levels: true, periods: false, sessions: true, elliott: true, waveUpOnly: false, waveColor: "#e879f9", depth: 5, styles: {} },
-};
 const KINDS = new Set<string>(SHAPE_KINDS);
-const CHART_TYPES = new Set(["candles", "hollow", "heikin", "bars", "line", "area"]);
-const SCALES = new Set(["normal", "log", "percent"]);
 const isPt = (p: unknown): p is { t: number; p: number } =>
   !!p && typeof (p as { t: unknown }).t === "number" && typeof (p as { p: unknown }).p === "number";
-
-/** Accept only what this version understands, so an old or edited layout never breaks the page. */
-function cleanLayout(raw: unknown): LayoutState {
-  const s = (raw ?? {}) as Partial<LayoutState>;
-  return {
-    symbol: s.symbol && SYMBOLS[s.symbol] ? s.symbol : DEFAULT_LAYOUT.symbol,
-    tf: s.tf && TF_IDS.includes(s.tf) ? s.tf : DEFAULT_LAYOUT.tf,
-    indicators: Array.isArray(s.indicators)
-      ? s.indicators.filter((i) => i && BY_ID[i.id]).slice(0, 12).map((i) => {
-        const styles = cleanOutputStyles(i.styles);
-        return { uid: String(i.uid), id: i.id, params: i.params ?? {}, ...(styles ? { styles } : {}) };
-      })
-      : DEFAULT_LAYOUT.indicators,
-    overlays: { trades: s.overlays?.trades !== false, events: s.overlays?.events !== false },
-    view: {
-      type: s.view?.type && CHART_TYPES.has(s.view.type) ? s.view.type : DEFAULT_LAYOUT.view.type,
-      scale: s.view?.scale && SCALES.has(s.view.scale) ? s.view.scale : DEFAULT_LAYOUT.view.scale,
-      magnet: s.view?.magnet === true,
-      style: {
-        up: isHex(s.view?.style?.up) ? s.view.style.up : DEFAULT_STYLE.up,
-        down: isHex(s.view?.style?.down) ? s.view.style.down : DEFAULT_STYLE.down,
-        bg: s.view?.style?.bg === "light" ? "light" : "dark",
-        volume: s.view?.style?.volume === true,
-        bgColor: isHex(s.view?.style?.bgColor) ? s.view.style.bgColor : null,
-        grid: s.view?.style?.grid !== false,
-        priceLine: cleanPriceLine(s.view?.style?.priceLine),
-        lineColor: isHex(s.view?.style?.lineColor) ? s.view.style.lineColor : null,
-      },
-    },
-    auto: {
-      chart: typeof s.auto?.chart === "boolean" ? s.auto.chart : DEFAULT_LAYOUT.auto.chart,
-      wedges: typeof s.auto?.wedges === "boolean" ? s.auto.wedges : DEFAULT_LAYOUT.auto.wedges,
-      candles: typeof s.auto?.candles === "boolean" ? s.auto.candles : DEFAULT_LAYOUT.auto.candles,
-      levels: typeof s.auto?.levels === "boolean" ? s.auto.levels : DEFAULT_LAYOUT.auto.levels,
-      periods: typeof s.auto?.periods === "boolean" ? s.auto.periods : DEFAULT_LAYOUT.auto.periods,
-      sessions: typeof s.auto?.sessions === "boolean" ? s.auto.sessions : DEFAULT_LAYOUT.auto.sessions,
-      elliott: typeof s.auto?.elliott === "boolean" ? s.auto.elliott : DEFAULT_LAYOUT.auto.elliott,
-      waveUpOnly: s.auto?.waveUpOnly === true,
-      waveColor: WAVE_COLORS.some((c) => c.v === s.auto?.waveColor) ? s.auto!.waveColor : DEFAULT_LAYOUT.auto.waveColor,
-      depth: [3, 5, 8].includes(Number(s.auto?.depth)) ? Number(s.auto?.depth) : DEFAULT_LAYOUT.auto.depth,
-      styles: cleanLayerStyles(s.auto?.styles),
-    },
-  };
-}
 
 function cleanDrawing(id: string, data: unknown): SymbolDrawings {
   const d = (data ?? {}) as { hlines?: unknown; shapes?: unknown };
@@ -95,14 +39,19 @@ async function Charts({ searchParams }: { searchParams: PageProps<"/charts">["se
   const { data: claims } = await supabase.auth.getClaims();
   if (!claims?.claims?.sub) {
     const layout = want ? { ...DEFAULT_LAYOUT, symbol: want } : DEFAULT_LAYOUT;
-    return <ChartTerminal signedIn={false} initial={{ layout, layoutId: null, watchlist: DEFAULT_WATCHLIST, watchlistId: null, drawings: {}, alerts: [] }} />;
+    return <ChartTerminal signedIn={false} initial={{ layout, layoutId: null, watchlist: DEFAULT_WATCHLIST, watchlistId: null, drawings: {}, alerts: [], templates: [] }} />;
   }
-  const [{ data: layout }, { data: watchlist }, { data: drawings }, { data: alerts }] = await Promise.all([
+  const [{ data: layout }, { data: watchlist }, { data: drawings }, { data: alerts }, { data: tpls }] = await Promise.all([
     supabase.from("layouts").select("id, state").eq("name", "default").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("watchlists").select("id, symbols").order("created_at").limit(1).maybeSingle(),
     supabase.from("drawings").select("id, symbol, data"),
     supabase.from("alerts").select("id, symbol, rule").eq("active", true).not("symbol", "is", null),
+    supabase.from("layouts").select("id, name, state").like("name", `${TEMPLATE_PREFIX}%`).order("name").limit(50),
   ]);
+  const templates = (tpls ?? []).flatMap((t): ChartTemplate[] => {
+    const c = cleanTemplate(t.id, String(t.name).slice(TEMPLATE_PREFIX.length), t.state);
+    return c ? [c] : [];
+  });
   const symbols = (watchlist?.symbols ?? []).filter((s: string) => SYMBOLS[s]);
   const bySymbol: Record<string, SymbolDrawings> = {};
   for (const d of drawings ?? []) bySymbol[d.symbol] = cleanDrawing(d.id, d.data);
@@ -120,6 +69,7 @@ async function Charts({ searchParams }: { searchParams: PageProps<"/charts">["se
       watchlistId: watchlist?.id ?? null,
       drawings: bySymbol,
       alerts: priceAlerts,
+      templates,
     }} />
   );
 }

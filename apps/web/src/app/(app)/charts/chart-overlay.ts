@@ -234,6 +234,8 @@ export type AutoDraw = {
   waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string } | null;
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [], waves: null };
+/** Higher-timeframe candles drawn behind the chart's own: each spans its start..end in the chart's time. */
+export type HtfDraw = { label: string; up: string; down: string; opacity: number; candles: { time: number; end: number; open: number; high: number; low: number; close: number }[] };
 // (also read by the server page when it cleans a saved layout, so it lives here and not in the client component)
 /** Colours for the Elliott impulse path and labels; none of them is the blue of the default EMA lines. */
 export const WAVE_COLORS = [
@@ -252,6 +254,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
   hidden = false;
   events: ChartEvent[] = [];
   auto: AutoDraw = NO_AUTO;
+  htf: HtfDraw | null = null;
   /** false: pattern names and "Mục tiêu" texts are left off; the pattern lines stay */
   patternText = true;
   index = new TimeIndex([], 3600);
@@ -266,7 +269,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     this.request = p.requestUpdate;
   }
   detached() { this.chart = null; this.series = null; this.request = null; }
-  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "auto" | "index" | "digits" | "patternText">>) {
+  update(patch: Partial<Pick<ChartOverlay, "shapes" | "preview" | "selected" | "hidden" | "events" | "auto" | "htf" | "index" | "digits" | "patternText">>) {
     Object.assign(this, patch);
     this.request?.();
   }
@@ -391,10 +394,49 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
 
   private renderer: IPrimitivePaneRenderer = {
     draw: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawPatterns(s); this.drawWaves(s); this.drawShapes(s); }),
-    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawSessions(s); this.drawLevels(s); this.drawEvents(s); }),
+    drawBackground: (target) => (target as unknown as Target).useMediaCoordinateSpace((s) => { this.drawHtf(s); this.drawSessions(s); this.drawLevels(s); this.drawEvents(s); }),
   };
   private view: IPrimitivePaneView = { zOrder: (): PrimitivePaneViewZOrder => "top", renderer: () => this.renderer };
   paneViews() { return [this.view]; }
+
+  /**
+   * Higher-timeframe candles: a faint body box over the bars it spans, its wick a line down the middle, and the
+   * timeframe and its open-close change on the newest few. Up / down colours of the chart's own candles.
+   */
+  private drawHtf({ context: ctx, mediaSize }: Media) {
+    const h = this.htf;
+    if (!h?.candles.length || !this.chart) return;
+    const half = this.chart.timeScale().options().barSpacing / 2;
+    const op = Math.max(0.1, Math.min(1, h.opacity));
+    ctx.save();
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.lineWidth = 1;
+    const n = h.candles.length;
+    h.candles.forEach((c, k) => {
+      const xa = this.x(c.time), xb = this.x(c.end), yo = this.y(c.open), yc = this.y(c.close), yh = this.y(c.high), yl = this.y(c.low);
+      if (xa == null || xb == null || yo == null || yc == null || yh == null || yl == null) return;
+      const x1 = xa - half, x2 = xb - half;
+      if (x2 < 0 || x1 > mediaSize.width || x2 - x1 < 2) return;
+      const color = c.close >= c.open ? h.up : h.down;
+      const top = Math.min(yo, yc), bodyH = Math.max(1, Math.abs(yc - yo));
+      const pad = Math.min(3, (x2 - x1) * 0.08);
+      const mid = Math.round((x1 + x2) / 2) + 0.5;
+      ctx.strokeStyle = color; ctx.fillStyle = color;
+      ctx.globalAlpha = 0.45 * op;
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(mid, yh); ctx.lineTo(mid, top); ctx.moveTo(mid, top + bodyH); ctx.lineTo(mid, yl); ctx.stroke();
+      ctx.globalAlpha = 0.1 * op;
+      ctx.fillRect(x1 + pad, top, x2 - x1 - 2 * pad, bodyH);
+      ctx.globalAlpha = 0.55 * op;
+      ctx.strokeRect(x1 + pad + 0.5, top + 0.5, x2 - x1 - 2 * pad - 1, bodyH - 1);
+      if (k >= n - 3 && x2 - x1 > 24) {
+        const pct = c.open ? ((c.close - c.open) / c.open) * 100 : 0;
+        ctx.globalAlpha = 0.85 * op;
+        ctx.fillText(`${h.label} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`, x1 + pad + 2, yh - 4);
+      }
+    });
+    ctx.restore();
+  }
 
   /** Session boxes: from the session's open to its close, spanning the high and low traded inside it. */
   private drawSessions({ context: ctx, mediaSize }: Media) {

@@ -6,6 +6,7 @@ import {
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
 import { NO_LIVE, useLiveBar, withLive, type LiveBarStore } from "./live-bar";
+import { htfCandles } from "./feed";
 import { ChartOverlay, PRICE_LINE_DEFAULT, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type OutputStyle, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
@@ -108,6 +109,8 @@ type Props = {
   events: ChartEvent[];
   /** Detected patterns, key levels and session boxes. */
   auto: AutoDraw;
+  /** Higher-timeframe candles behind the chart's own; the newest follows the live price (see htfCandles). */
+  htf?: { tf: string; bars: Bar[]; label: string; opacity: number } | null;
   tradeMarkers: TimedMarker[];
   tradeLines: PriceLineSpec[];
   /** false: signal texts are dropped (pattern names, targets, indicator marker texts such as "Vol ×2.9"); arrows, dots and lines stay */
@@ -137,7 +140,7 @@ export function PriceChart({ live: liveStore = NO_LIVE, liveKey = "", ...rest }:
 }
 
 function PriceChartView(props: Props) {
-  const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref, patternText = true } = props;
+  const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref, patternText = true, htf } = props;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const main = useRef<ISeriesApi<SeriesType> | null>(null);
@@ -549,6 +552,12 @@ function PriceChartView(props: Props) {
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);
   useEffect(() => { overlay.current.update({ auto, patternText }); }, [auto, patternText]);
+  // the big candles: rebuilt from the chart's bars, so the newest moves with each live tick (only the tail is redone)
+  useEffect(() => {
+    overlay.current.update({
+      htf: htf ? { label: htf.label, opacity: htf.opacity, up: style.up, down: style.down, candles: htfCandles(htf.bars, bars, htf.tf) } : null,
+    });
+  }, [htf, bars, style.up, style.down]);
 
   // horizontal lines (bell = price alert armed) and open copy-trade positions
   useEffect(() => {
