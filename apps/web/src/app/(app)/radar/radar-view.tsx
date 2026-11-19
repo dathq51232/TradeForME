@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { Badge, Empty, Panel, btn, td, th } from "@/components/ui";
 import { ago, num, type Tone } from "@/lib/format";
 import { saveRadarSettings } from "./actions";
+import { perpUrl, spotUrl } from "./links";
 
 // Shapes written by supabase/functions/_shared/radar.ts.
 type Leg = { ex: string; native: string; quote: string; price: number; volUsd: number };
@@ -49,6 +50,14 @@ const price = (v: number) => {
   const d = a >= 1000 ? 2 : a >= 1 ? 4 : a >= 0.01 ? 6 : 8;
   return v.toLocaleString("en-US", { maximumFractionDigits: d });
 };
+/** An exchange name that opens its trade page in a new tab (plain text when there is no page). */
+function ExLink({ href, children, title }: { href: string | null; children: React.ReactNode; title?: string }) {
+  if (!href) return <>{children}</>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" title={title ?? "Mở trang giao dịch trên sàn (tab mới)"}
+      className="text-accent underline-offset-2 hover:underline">{children} ↗</a>
+  );
+}
 const money = (v: number) => (v >= 1e9 ? `${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}K` : num(v, 0));
 
 export function RadarView({ data, tab: initial }: { data: RadarData; tab?: string }) {
@@ -176,8 +185,8 @@ function Arbitrage({ data }: { data: RadarData }) {
                     <span className="font-medium">{r.base}</span>
                     {r.suspect && <span className="ml-1.5" title="Giá lệch xa các sàn khác: thường là token khác trùng tên, hoặc sàn đang khóa nạp/rút"><Badge tone="warn">đáng ngờ</Badge></span>}
                   </td>
-                  <td className={td}><div>{exName(r.buy.ex)} <span className="text-xs text-muted">{r.buy.native}</span></div><div className="font-mono text-xs">{price(r.buy.price)}</div></td>
-                  <td className={td}><div>{exName(r.sell.ex)} <span className="text-xs text-muted">{r.sell.native}</span></div><div className="font-mono text-xs">{price(r.sell.price)}</div></td>
+                  <td className={td}><div><ExLink href={spotUrl(r.buy.ex, r.base, r.buy.quote)} title={`Mua ${r.base} trên ${exName(r.buy.ex)} (mở tab mới)`}>{exName(r.buy.ex)}</ExLink> <span className="text-xs text-muted">{r.buy.native}</span></div><div className="font-mono text-xs">{price(r.buy.price)}</div></td>
+                  <td className={td}><div><ExLink href={spotUrl(r.sell.ex, r.base, r.sell.quote)} title={`Bán ${r.base} trên ${exName(r.sell.ex)} (mở tab mới)`}>{exName(r.sell.ex)}</ExLink> <span className="text-xs text-muted">{r.sell.native}</span></div><div className="font-mono text-xs">{price(r.sell.price)}</div></td>
                   <td className={`${td} text-right font-mono`}>{pct(r.gross)}</td>
                   <td className={`${td} text-right font-mono ${toneOf(r.net)}`}>{pct(r.net)}</td>
                   <td className={`${td} text-right font-mono`}>
@@ -258,8 +267,8 @@ function Futures({ data }: { data: RadarData }) {
                     <span className="font-medium">{r.base}</span>
                     {r.suspect && <span className="ml-1.5" title="Giá lệch xa các sàn khác: thường là hợp đồng của token khác trùng tên, hoặc hợp đồng sắp huỷ niêm yết"><Badge tone="warn">đáng ngờ</Badge></span>}
                   </td>
-                  <td className={td}><div>{exName(r.long.ex)} <span className="text-xs text-muted">{r.long.native}</span></div><div className="font-mono text-xs">{price(r.long.price)}</div></td>
-                  <td className={td}><div>{exName(r.short.ex)} <span className="text-xs text-muted">{r.short.native}</span></div><div className="font-mono text-xs">{price(r.short.price)}</div></td>
+                  <td className={td}><div><ExLink href={perpUrl(r.long.ex, r.long.native)} title={`Hợp đồng ${r.long.native} trên ${exName(r.long.ex)} (mở tab mới)`}>{exName(r.long.ex)}</ExLink> <span className="text-xs text-muted">{r.long.native}</span></div><div className="font-mono text-xs">{price(r.long.price)}</div></td>
+                  <td className={td}><div><ExLink href={perpUrl(r.short.ex, r.short.native)} title={`Hợp đồng ${r.short.native} trên ${exName(r.short.ex)} (mở tab mới)`}>{exName(r.short.ex)}</ExLink> <span className="text-xs text-muted">{r.short.native}</span></div><div className="font-mono text-xs">{price(r.short.price)}</div></td>
                   <td className={`${td} text-right font-mono`}>{pct(r.gross, 3)}</td>
                   <td className={`${td} text-right font-mono ${toneOf(r.net)}`}>{pct(r.net, 3)}</td>
                   <td className={`${td} text-right font-mono ${r.funding8h == null ? "text-muted" : toneOf(r.funding8h)}`}
@@ -301,12 +310,13 @@ function Pumps({ data }: { data: RadarData }) {
     <Panel title={`Bơm giá (${data.pumps.length})`}>
       {sorted.length ? (
         <div className="-m-4 overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-sm">
+          <table className="w-full min-w-[1100px] text-sm">
             <thead className="border-b border-border">
               <tr>
                 {head("base", "Coin", false)}{head("stage", "Giai đoạn", false)}{head("score", "Điểm")}{head("price", "Giá")}
                 {head("chg5m", "5 phút")}{head("chg15m", "15 phút")}{head("chg60m", "1 giờ")}{head("volRatio", "KL so bình thường")}
                 {head("takerBuy", "Lệnh mua chủ động")}{head("fromPeak", "Từ đỉnh 30 phút")}{head("funding", "Funding")}{head("vol24hUsd", "KL 24h")}
+                <th className={`${th} whitespace-nowrap`}>Mở trên Binance</th>
               </tr>
             </thead>
             <tbody>
@@ -326,6 +336,10 @@ function Pumps({ data }: { data: RadarData }) {
                     <td className={`${td} text-right font-mono ${toneOf(r.fromPeak)}`}>{pct(r.fromPeak)}</td>
                     <td className={`${td} text-right font-mono text-muted`}>{r.funding == null ? "—" : `${r.funding.toFixed(3)}%`}</td>
                     <td className={`${td} text-right font-mono`}>{money(r.vol24hUsd)}</td>
+                    <td className={`${td} whitespace-nowrap text-xs`}>
+                      <ExLink href={spotUrl("BINANCE", r.base, "USDT")} title={`${r.base}/USDT spot trên Binance (mở tab mới)`}>Spot</ExLink>
+                      {r.funding != null && <> · <ExLink href={perpUrl("BINANCE", r.native)} title={`Hợp đồng vĩnh cửu ${r.native} trên Binance (mở tab mới)`}>Futures</ExLink></>}
+                    </td>
                   </tr>
                 );
               })}
@@ -336,6 +350,9 @@ function Pumps({ data }: { data: RadarData }) {
       <p className="mt-3 text-xs text-muted">
         Cặp USDT trên Binance, từ nến 1 phút. Khối lượng so 5 phút gần nhất với mức thường ngày trong 2,5 giờ trước. Đang bơm: giá và khối lượng
         cùng tăng. Tạo đỉnh: cách đỉnh từ 3% hoặc bên bán bắt đầu áp đảo. Đang xả: cách đỉnh từ 8% và vẫn đang giảm.
+        Link Spot / Futures mở trang giao dịch của Binance ở tab mới để bạn tự đặt lệnh; Radar không đặt lệnh. Coin đang bơm thường đảo chiều rất nhanh
+        (xem cột Giai đoạn và Từ đỉnh 30 phút): đây không phải tín hiệu mua.
+
       </p>
     </Panel>
   );
