@@ -3,7 +3,7 @@
 -- perpetuals on two exchanges, with funding. That second list goes to its own column.
 
 alter table public.radar_snapshot
-  add column futures jsonb not null default '{}'; -- {arbitrage: [{base, long, short, gross, funding8h, ...}], status: {"BINANCE": {ok, contracts}}, coins}
+  add column if not exists futures jsonb not null default '{}'; -- {arbitrage: [{base, long, short, gross, funding8h, ...}], status: {"BINANCE": {ok, contracts}}, coins}
 
 create or replace function public.radar_save(p_snapshot jsonb, p_state jsonb, p_listings jsonb)
 returns int
