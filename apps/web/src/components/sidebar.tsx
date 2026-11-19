@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const NAV: { href: string; label: string; icon: string; soon?: string }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "▦" },
   { href: "/charts", label: "Biểu đồ", icon: "◩" },
+  { href: "/backtest", label: "Backtest", icon: "⟲" },
   { href: "/accounts", label: "Tài khoản MT5", icon: "▤" },
   { href: "/copy", label: "Copy Trading", icon: "⇉" },
   { href: "/radar", label: "Radar thị trường", icon: "◎" },

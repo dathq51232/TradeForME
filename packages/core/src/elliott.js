@@ -8,7 +8,7 @@
 // wave 4 retraces 24-50% of 3, waves 2 and 4 alternate in depth). One count at a time: a reading aid, not signals.
 // Pure functions over bars { time, open, high, low, close }.
 import { swingPivots } from "./patterns.js";
-import { atr } from "./indicators.js";
+import { atr, rsiOf, source } from "./indicators.js";
 
 /**
  * Swing pivots with every leg shorter than `minMove` removed (both its ends), with `collapse` sideways swings inside
@@ -129,41 +129,51 @@ const LABELS = ["", "(1)", "(2)", "(3)", "(4)", "(5)", "A", "B", "C"];
  *   target: { price: number, label: string } | null
  * }}
  */
-export function elliottWaves(bars, { depth = 5, minAtr = 1.5, upOnly = false } = {}) {
+export function elliottWaves(bars, { depth = 5, minAtr = 1.5, upOnly = false, ...opt } = {}) {
+  const o = { pick: "newest", minScore: 0, anchor: 0, bMax: 1.382, ...opt };
+  o.rsi = rsiOf(source(bars, "close"), 14);
   // the smallest wave degree that gives a current count; a choppy correction at one degree is often a single wave
   // of the next one up, so the swing filter is widened before giving up
-  for (const m of [minAtr, minAtr * 1.75, minAtr * 3]) {
+  const degrees = [minAtr, minAtr * 1.75, minAtr * 3];
+  for (let d = o.minDegree ?? 0; d < degrees.length; d++) {
     for (const collapse of [false, true]) {
-      const r = countAt(bars, depth, m, collapse, upOnly);
-      if (r) return r;
+      const r = countAt(bars, depth, degrees[d], collapse, upOnly, o);
+      if (r) return { ...r, degree: d, bMax: o.bMax };
     }
   }
   return null;
 }
 
-function countAt(bars, depth, minAtr, collapse, upOnly) {
+/** Wave 1 starts at a real turn: the lowest low (highest high going down) of the `n` bars before it. */
+function anchored(bars, p0, dir, n) {
+  if (!n) return true;
+  for (let i = Math.max(0, p0.i - n); i < p0.i; i++) if (dir > 0 ? bars[i].low < p0.price : bars[i].high > p0.price) return false;
+  return true;
+}
+
+function countAt(bars, depth, minAtr, collapse, upOnly, o) {
   const piv = wavePivots(bars, { depth, minAtr, collapse });
   if (piv.length < 4) return null;
   const n = piv.length;
   const dirOf = (q) => (q.kind === "L" ? 1 : -1);
   let best = null;
-  // a complete impulse with at most three pivots after it (its correction), newest first
+  // a complete impulse with at most three pivots after it (its correction), newest first ("best": highest score)
   for (let s = n - 6; s >= Math.max(0, n - 9); s--) {
     const p = piv.slice(s, s + 6);
     const dir = dirOf(p[0]);
     if (upOnly && dir < 0) continue;
     const sc = impulseScore(p, dir);
-    if (sc == null) continue;
+    if (sc == null || sc < o.minScore || !anchored(bars, p[0], dir, o.anchor)) continue;
     const after = piv.slice(s + 6);
     // correction: A against the trend, B back by at most 138.2% of A (beyond the end of 5 only in an expanded
     // flat), C beyond A
     const corr = [];
     if (after[0]) corr.push(after[0]);
-    if (after[1] && Math.abs(after[1].price - after[0].price) <= 1.382 * Math.abs(after[0].price - p[5].price)) corr.push(after[1]);
+    if (after[1] && Math.abs(after[1].price - after[0].price) <= o.bMax * Math.abs(after[0].price - p[5].price)) corr.push(after[1]);
     if (corr.length === 2 && after[2] && after[2].price * dir < after[0].price * dir) corr.push(after[2]);
     if (corr.length < after.length) continue; // what followed is not a clean A-B-C: the count is not current
-    best = { s, dir, score: sc, pts: [...p, ...corr] };
-    break;
+    if (!best || (o.pick === "best" && sc > best.score)) best = { s, dir, score: sc, pts: [...p, ...corr] };
+    if (o.pick !== "best") break;
   }
   // otherwise an impulse still unfolding, ending at the last pivot: (1)(2)(3) or (1)(2)(3)(4)
   if (!best) {
@@ -173,7 +183,7 @@ function countAt(bars, depth, minAtr, collapse, upOnly) {
       const dir = dirOf(p[0]);
       if (upOnly && dir < 0) continue;
       const sc = impulseScore(p, dir);
-      if (sc != null && sc >= 2) { best = { s: n - k - 1, dir, score: sc, pts: p }; break; }
+      if (sc != null && sc >= 2 && anchored(bars, p[0], dir, o.anchor)) { best = { s: n - k - 1, dir, score: sc, pts: p }; break; }
     }
   }
   // up-only: a fall from a top read as a correction on its own, A-B-C (or A-B so far), ending at the last pivot
@@ -183,7 +193,7 @@ function countAt(bars, depth, minAtr, collapse, upOnly) {
       const p = piv.slice(n - k - 1);
       if (p[0].kind !== "H") continue;
       const a = p[0].price - p[1].price, b = p[2].price - p[1].price;
-      if (!(a > 0 && b > 0 && b <= 1.382 * a)) continue;
+      if (!(a > 0 && b > 0 && b <= o.bMax * a)) continue;
       if (k === 3 && !(p[3].price < p[1].price)) continue;
       return correctionOnly(p);
     }
@@ -196,19 +206,36 @@ function countAt(bars, depth, minAtr, collapse, upOnly) {
   const up = dir > 0;
   const trend = up ? "tăng" : "giảm";
   const live = points[k].provisional ? " (đang chạy)" : "";
+  // The 2-4 line: the classic check that an impulse is over is a close beyond it after wave 5. Calling the top at
+  // the wave-5 pivot alone did no better than chance in the walk-forward test (signal-test.js), so until price closes
+  // beyond the line the count only says the fifth MAY be done.
+  let line24 = null, endConfirmed = null;
+  if (k >= 4) {
+    const a = pts[2], b = pts[4];
+    const at = (i) => a.price + ((b.price - a.price) * (i - a.i)) / (b.i - a.i || 1);
+    line24 = { a: { time: a.time, price: a.price }, b: { time: b.time, price: b.price } };
+    if (k >= 5) {
+      endConfirmed = false;
+      for (let i = pts[5].i + 1; i < bars.length; i++) if ((bars[i].close - at(i)) * dir < 0) { endConfirmed = true; break; }
+    }
+  }
+  const confirm = endConfirmed ? "đã phá đường 2-4" : "chưa phá đường 2-4";
   const text = {
     w3: () => `Sóng đẩy ${trend.toUpperCase()}: đang ở sóng 3${live}`,
     w4: () => `Sóng đẩy ${trend.toUpperCase()}: sóng 4${live}, chờ sóng 5`,
-    w5: () => `Sóng đẩy ${trend.toUpperCase()} 1-5${live ? " (sóng 5 đang chạy)" : " hoàn tất, chờ điều chỉnh A-B-C"}`,
-    A: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng A${live}`,
-    B: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng B${live}, chờ C`,
+    w5: () => `Sóng đẩy ${trend.toUpperCase()} 1-5${live ? (endConfirmed ? ": giá đã phá đường 2-4 sau sóng 5, sóng 5 có thể đã xong" : " (sóng 5 đang chạy)") : endConfirmed ? " hoàn tất (đã phá đường 2-4), chờ điều chỉnh A-B-C" : ": sóng 5 có thể đã xong, chờ giá phá đường 2-4 để xác nhận"}`,
+    A: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng A${live} · ${confirm}`,
+    B: () => `Hồi ${up ? "giảm" : "tăng"} sau sóng đẩy ${trend}: sóng B${live}, C chỉ xác nhận khi B kết thúc`,
     C: () => `Điều chỉnh A-B-C${live ? " (C đang chạy)" : " hoàn tất"}`,
   }[stage]();
   // one projection, where the next wave usually ends: 5 = 1 in length, C = A in length
   let target = null;
   if (stage === "w4") target = { price: pts[4].price + (pts[1].price - pts[0].price), label: "Sóng 5 = sóng 1" };
   if (stage === "B") target = { price: pts[7].price - (pts[5].price - pts[6].price), label: "C = A" };
-  return { dir, stage, text, score: best.score, points, target };
+  // momentum divergence at the end of wave 5: RSI lower at 5 than at 3 for an up impulse (higher going down)
+  const r3 = o.rsi[pts[3]?.i], r5 = o.rsi[pts[5]?.i];
+  const divergence = k >= 5 && Number.isFinite(r3) && Number.isFinite(r5) ? (r5 - r3) * dir < 0 : null;
+  return { dir, stage, text, score: best.score, points, target, divergence, line24, endConfirmed };
 }
 
 /** A falling A-B-C (or A-B) after a top, without the impulse before it: labels "", A, B, C. */

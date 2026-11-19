@@ -15,7 +15,8 @@
     "./patterns": "./src/patterns.js",
     "./rsi-tools": "./src/rsi-tools.js",
     "./trend": "./src/trend.js",
-    "./elliott": "./src/elliott.js"
+    "./elliott": "./src/elliott.js",
+    "./signal-test": "./src/signal-test.js"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

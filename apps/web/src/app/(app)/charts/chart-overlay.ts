@@ -231,7 +231,11 @@ export type AutoDraw = {
   levels: { layer?: LayerKey; price: number; from: number; label: string; color: string; width: number; dashed: boolean }[];
   sessions: { name: string; color: string; start: number; end: number; high: number; low: number }[];
   /** Elliott count: its turning points with their labels ("" for the start), and one projected level. */
-  waves?: { points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string } | null;
+  waves?: {
+    points: (Pt & { label: string; provisional: boolean })[]; target: { price: number; label: string } | null; color?: string;
+    /** the line through the ends of waves 2 and 4: a close beyond it after wave 5 confirms the impulse is over */
+    line24?: { a: Pt; b: Pt; broken: boolean | null } | null;
+  } | null;
 };
 export const NO_AUTO: AutoDraw = { patterns: [], levels: [], sessions: [], waves: null };
 /** Higher-timeframe candles drawn behind the chart's own: each spans its start..end in the chart's time. */
@@ -544,7 +548,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
    * Elliott count, kept quiet: a thin line through the turning points (impulse blue, correction orange, the live leg
    * dashed) and one small round badge per wave, above a top and below a bottom.
    */
-  private drawWaves({ context: ctx }: Media) {
+  private drawWaves({ context: ctx, mediaSize }: Media) {
     const w = this.auto.waves;
     if (!w || w.points.length < 2) return;
     const xy = w.points.map((q) => this.xy(q));
@@ -560,6 +564,20 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       ctx.strokeStyle = roleColor(w.points[k].label);
       ctx.setLineDash(layerDash(st, w.points[k].provisional ? [4, 4] : []));
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // the 2-4 line, from wave 2 out to the right edge
+    const l = w.line24, la = l && this.xy(l.a), lb = l && this.xy(l.b);
+    if (l && la && lb && lb.x !== la.x) {
+      const x2 = mediaSize.width, y2 = la.y + ((lb.y - la.y) * (x2 - la.x)) / (lb.x - la.x);
+      ctx.globalAlpha = (l.broken ? 0.75 : 0.5) * st.opacity;
+      ctx.strokeStyle = impulse;
+      ctx.lineWidth = st.width;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(la.x, la.y); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillStyle = impulse;
+      ctx.fillText(l.broken ? "2-4 đã phá" : "Đường 2-4", Math.min(lb.x + 8, x2 - 70), lb.y + ((lb.y - la.y) / (lb.x - la.x)) * Math.min(8, x2 - 70 - lb.x) + 12);
     }
     ctx.setLineDash([]);
     ctx.font = "600 11px system-ui, sans-serif";

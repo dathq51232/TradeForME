@@ -895,6 +895,11 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         points: found.elliott.points.map((q) => ({ t: q.time, p: q.price, label: q.label, provisional: q.provisional })),
         target: found.elliott.target,
         color: auto.waveColor,
+        line24: found.elliott.line24 && {
+          a: { t: found.elliott.line24.a.time, p: found.elliott.line24.a.price },
+          b: { t: found.elliott.line24.b.time, p: found.elliott.line24.b.price },
+          broken: found.elliott.endConfirmed,
+        },
       },
     };
   }, [found, info.digits, auto.waveColor, auto.styles]);
@@ -1312,8 +1317,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                 〰 Elliott: chưa có số đếm rõ ở khung này
               </span>
             ) : null}
-            {wedgeChips.map((w) => (
-              <span key={`${w.kind}${w.start}`}
+            {wedgeChips.map((w, k) => (
+              <span key={`${w.kind}${w.start}:${k}`}
                 title={[
                   w.reasons.length ? `Điểm ${w.score}/100: ${w.reasons.join(", ")}` : `Điểm ${w.score}/100`,
                   w.entry != null ? `Vào ${fmt(w.entry, info.digits)} · SL ${fmt(w.stop ?? 0, info.digits)} · TP1 ${fmt(w.tp1 ?? 0, info.digits)} · TP2 ${fmt(w.target ?? 0, info.digits)}` : `Đỉnh nêm lúc ${new Date(w.apex * 1000).toLocaleString("vi-VN")}`,
