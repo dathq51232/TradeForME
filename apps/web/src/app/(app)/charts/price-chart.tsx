@@ -6,7 +6,7 @@ import {
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
 import { NO_LIVE, useLiveBar, withLive, type LiveBarStore } from "./live-bar";
-import { ChartOverlay, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type OutputStyle, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, PRICE_LINE_DEFAULT, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type OutputStyle, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 /** styles: per output key, the user's colour, width and dash (see OutputStyle) */
@@ -367,7 +367,18 @@ function PriceChartView(props: Props) {
         borderUpColor: eu, borderDownColor: ed, wickUpColor: eu, wickDownColor: ed,
       });
     } else if (chartType === "bars") s.applyOptions({ upColor: eu, downColor: ed });
-  }, [style.up, style.down, theme, chartType]);
+    else {
+      // "Đường" / "Vùng": one colour for the line, the area fading from it
+      const lc = style.lineColor || C.line;
+      s.applyOptions(chartType === "line" ? { color: lc } : { lineColor: lc, topColor: withAlpha(lc, 0.35), bottomColor: withAlpha(lc, 0.02) });
+    }
+    // current-price line and its axis label; an empty colour follows the last candle (green up, red down)
+    const pl = { ...PRICE_LINE_DEFAULT, ...style.priceLine };
+    s.applyOptions({
+      priceLineVisible: pl.visible, lastValueVisible: pl.visible, priceLineColor: pl.color ?? "",
+      priceLineWidth: pl.width, priceLineStyle: LINE_STYLE[pl.dash],
+    });
+  }, [style.up, style.down, style.priceLine, style.lineColor, theme, chartType]);
 
   // price format and scale
   useEffect(() => {

@@ -3,7 +3,7 @@ import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
 import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, cleanOutputStyles, type Shape } from "./chart-overlay";
+import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, cleanOutputStyles, cleanPriceLine, type Shape } from "./chart-overlay";
 import { DEFAULT_STYLE } from "./chart-overlay";
 
 const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -53,6 +53,8 @@ function cleanLayout(raw: unknown): LayoutState {
         volume: s.view?.style?.volume === true,
         bgColor: isHex(s.view?.style?.bgColor) ? s.view.style.bgColor : null,
         grid: s.view?.style?.grid !== false,
+        priceLine: cleanPriceLine(s.view?.style?.priceLine),
+        lineColor: isHex(s.view?.style?.lineColor) ? s.view.style.lineColor : null,
       },
     },
     auto: {

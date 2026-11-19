@@ -46,7 +46,25 @@ type XY = { x: number; y: number };
  * How the price pane looks (saved in the layout): candle colours, background, grid, and volume bars along its bottom.
  * bg is the light/dark family; bgColor, when set, is the exact background (bg then follows its brightness).
  */
-export type ChartStyle = { up: string; down: string; bg: "dark" | "light"; volume: boolean; bgColor?: string | null; grid?: boolean };
+export type ChartStyle = {
+  up: string; down: string; bg: "dark" | "light"; volume: boolean; bgColor?: string | null; grid?: boolean;
+  /** the current-price line across the chart and its label on the price axis; colour null = the last candle's colour */
+  priceLine?: { visible: boolean; color: string | null; width: 1 | 2 | 3 | 4; dash: LineDash };
+  /** colour of the "Đường" / "Vùng" chart types; null = blue */
+  lineColor?: string | null;
+};
+export const PRICE_LINE_DEFAULT: NonNullable<ChartStyle["priceLine"]> = { visible: true, color: null, width: 1, dash: "dashed" };
+/** The saved price-line settings with anything missing or out of range put back to the default. */
+export function cleanPriceLine(raw: unknown): ChartStyle["priceLine"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const p = raw as Partial<NonNullable<ChartStyle["priceLine"]>>;
+  return {
+    visible: p.visible !== false,
+    color: isHex(p.color) ? p.color : null,
+    width: typeof p.width === "number" && [1, 2, 3, 4].includes(p.width) ? p.width : 1,
+    dash: typeof p.dash === "string" && LINE_DASHES.has(p.dash) ? p.dash : "dashed",
+  };
+}
 export const DEFAULT_STYLE: ChartStyle = { up: "#00c087", down: "#f45b69", bg: "dark", volume: false, bgColor: null, grid: true };
 
 /** Relative luminance (0..1) of a #rrggbb colour. */

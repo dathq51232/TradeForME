@@ -12,7 +12,7 @@ import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
 import { createLiveBar, useLiveBar, withLive, type LiveBarStore, type LiveState } from "./live-bar";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, type LayerKey, type LayerStyle, type LayerDash, type LineDash, type OutputStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, PRICE_LINE_DEFAULT, type LayerKey, type LayerStyle, type LayerDash, type LineDash, type OutputStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
@@ -365,6 +365,9 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const setLayerStyle = (k: LayerKey, s: LayerStyle) => setAuto((a) => ({ ...a, styles: { ...a.styles, [k]: s } }));
   const [styleMenu, setStyleMenu] = useState(false);
   const setStyle = (patch: Partial<ChartStyle>) => setView((v) => ({ ...v, style: { ...v.style, ...patch } }));
+  const priceLine = { ...PRICE_LINE_DEFAULT, ...view.style.priceLine };
+  const setPriceLine = (patch: Partial<typeof priceLine>) =>
+    setView((v) => ({ ...v, style: { ...v.style, priceLine: { ...PRICE_LINE_DEFAULT, ...v.style.priceLine, ...patch } } }));
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState(false);
   // indicators (and pattern drawings) taken off the chart without removing them; remembered on this browser
@@ -994,6 +997,35 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                     <input type="color" value={view.style.bgColor ?? (view.style.bg === "light" ? "#ffffff" : "#0b0f17")}
                       onChange={(e) => setStyle({ bgColor: e.target.value, bg: bgFamily(e.target.value) })} className="h-6 w-8 cursor-pointer p-0" />
                   </label>
+                </div>
+                <div className="text-muted">Đường giá hiện tại</div>
+                <div className="grid gap-1.5 rounded border border-border px-2 py-1.5">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" checked={priceLine.visible} onChange={(e) => setPriceLine({ visible: e.target.checked })} />
+                    <span>Hiện đường ngang và nhãn giá ở trục phải</span>
+                  </label>
+                  <div className={`flex items-center gap-1.5 ${priceLine.visible ? "" : "pointer-events-none opacity-50"}`}>
+                    <label className="flex cursor-pointer items-center gap-1" title="Bỏ chọn: đường đổi màu theo nến cuối (xanh khi tăng, đỏ khi giảm)">
+                      <input type="checkbox" checked={!!priceLine.color} onChange={(e) => setPriceLine({ color: e.target.checked ? "#f5d742" : null })} />
+                      <span>{priceLine.color ? "Màu" : "Theo nến"}</span>
+                    </label>
+                    {priceLine.color && (
+                      <input type="color" value={priceLine.color} onChange={(e) => setPriceLine({ color: e.target.value })} aria-label="Màu đường giá"
+                        className="h-6 w-8 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0" />
+                    )}
+                    <select value={priceLine.width} onChange={(e) => setPriceLine({ width: Number(e.target.value) as 1 | 2 | 3 | 4 })} aria-label="Độ dày đường giá" title="Độ dày nét" className="w-16 shrink-0">
+                      {[1, 2, 3, 4].map((w) => <option key={w} value={w}>{w}px</option>)}
+                    </select>
+                    <select value={priceLine.dash} onChange={(e) => setPriceLine({ dash: e.target.value as LineDash })} aria-label="Kiểu nét đường giá" title="Kiểu nét" className="min-w-0 flex-1">
+                      {LINE_DASHES.map((d) => <option key={d.v} value={d.v}>{d.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted">Màu biểu đồ Đường / Vùng</span>
+                  <input type="color" value={view.style.lineColor ?? "#4f8cff"} onChange={(e) => setStyle({ lineColor: e.target.value })} aria-label="Màu biểu đồ đường"
+                    className="h-6 w-8 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0" />
+                  {view.style.lineColor && <button onClick={() => setStyle({ lineColor: null })} className="text-muted hover:text-foreground" title="Về màu xanh mặc định">↺</button>}
                 </div>
                 <label className="flex cursor-pointer items-center gap-2">
                   <input type="checkbox" checked={view.style.grid !== false} onChange={(e) => setStyle({ grid: e.target.checked })} />
