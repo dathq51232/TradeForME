@@ -3,7 +3,7 @@ import { SYMBOLS, TF_IDS, DEFAULT_WATCHLIST } from "@qt/shared/market";
 import { BY_ID } from "@qt/core/indicators";
 import { createClient } from "@/lib/supabase/server";
 import { ChartTerminal, type LayoutState, type PriceAlert, type SymbolDrawings } from "./terminal";
-import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, type Shape } from "./chart-overlay";
+import { SHAPE_KINDS, SHAPE_POINTS, WAVE_COLORS, cleanLayerStyles, cleanOutputStyles, type Shape } from "./chart-overlay";
 import { DEFAULT_STYLE } from "./chart-overlay";
 
 const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -36,7 +36,10 @@ function cleanLayout(raw: unknown): LayoutState {
     symbol: s.symbol && SYMBOLS[s.symbol] ? s.symbol : DEFAULT_LAYOUT.symbol,
     tf: s.tf && TF_IDS.includes(s.tf) ? s.tf : DEFAULT_LAYOUT.tf,
     indicators: Array.isArray(s.indicators)
-      ? s.indicators.filter((i) => i && BY_ID[i.id]).slice(0, 12).map((i) => ({ uid: String(i.uid), id: i.id, params: i.params ?? {} }))
+      ? s.indicators.filter((i) => i && BY_ID[i.id]).slice(0, 12).map((i) => {
+        const styles = cleanOutputStyles(i.styles);
+        return { uid: String(i.uid), id: i.id, params: i.params ?? {}, ...(styles ? { styles } : {}) };
+      })
       : DEFAULT_LAYOUT.indicators,
     overlays: { trades: s.overlays?.trades !== false, events: s.overlays?.events !== false },
     view: {

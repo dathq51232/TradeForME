@@ -161,10 +161,16 @@ export type LayerStyle = {
   /** 0.5-3, multiplies its line widths */ width: number;
   /** -0.5-2: pattern and wedge boundary lines shortened (<0) or extended (>0) by this share of their length */ extend: number;
   /** Elliott: draw the line through the wave points */ path: boolean;
+  /** one colour for every line and label of the layer; "" keeps the layer's own (by direction, by session…) */ color: string;
+  /** "auto" keeps the layer's own dashes (neckline, provisional leg, session box…) */ dash: LayerDash;
 };
-export const LAYER_STYLE_DEFAULT: LayerStyle = { opacity: 1, width: 1, extend: 0, path: false };
+export type LineDash = "solid" | "dashed" | "dotted";
+export type LayerDash = "auto" | LineDash;
+export const LAYER_STYLE_DEFAULT: LayerStyle = { opacity: 1, width: 1, extend: 0, path: false, color: "", dash: "auto" };
 const LAYER_KEYS: LayerKey[] = ["chart", "wedges", "levels", "periods", "sessions", "elliott"];
+const LINE_DASHES = new Set<string>(["solid", "dashed", "dotted"]);
 const clamp = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
 /** Only known layers and in-range values, so an old or edited layout cannot break the chart. */
 export function cleanLayerStyles(raw: unknown): Partial<Record<LayerKey, LayerStyle>> {
   const out: Partial<Record<LayerKey, LayerStyle>> = {};
@@ -174,9 +180,30 @@ export function cleanLayerStyles(raw: unknown): Partial<Record<LayerKey, LayerSt
     if (!s || typeof s !== "object") continue;
     out[k] = {
       opacity: clamp(s.opacity, 0.1, 1, 1), width: clamp(s.width, 0.5, 3, 1), extend: clamp(s.extend, -0.5, 2, 0), path: s.path === true,
+      color: isHex(s.color) ? s.color : "", dash: typeof s.dash === "string" && LINE_DASHES.has(s.dash) ? s.dash as LineDash : "auto",
     };
   }
   return out;
+}
+/** Canvas dash pattern for a layer line: its own unless the layer's style picks one. */
+export const layerDash = (st: LayerStyle, own: number[]) =>
+  st.dash === "solid" ? [] : st.dash === "dashed" ? [6, 4] : st.dash === "dotted" ? [2, 3] : own;
+
+/** How one indicator output is drawn, set by the user; anything left out keeps the indicator's own look. */
+export type OutputStyle = { color?: string; width?: 1 | 2 | 3 | 4; dash?: LineDash };
+/** Output key -> style, cleaned like the layer styles (saved inside each indicator of the layout). */
+export function cleanOutputStyles(raw: unknown): Record<string, OutputStyle> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, OutputStyle> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, Partial<OutputStyle>>).slice(0, 24)) {
+    if (!v || typeof v !== "object" || k.length > 40) continue;
+    const s: OutputStyle = {};
+    if (isHex(v.color)) s.color = v.color;
+    if (typeof v.width === "number" && [1, 2, 3, 4].includes(v.width)) s.width = v.width as OutputStyle["width"];
+    if (typeof v.dash === "string" && LINE_DASHES.has(v.dash)) s.dash = v.dash as LineDash;
+    if (Object.keys(s).length) out[k] = s;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** What automatic chart reading asks the overlay to draw (computed by @qt/core/patterns). */
@@ -361,16 +388,17 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     for (const s of this.auto.sessions) {
       const x1 = this.x(s.start), x2 = this.x(s.end), yh = this.y(s.high), yl = this.y(s.low);
       if (x1 == null || x2 == null || yh == null || yl == null || x2 < 0 || x1 > mediaSize.width) continue;
+      const color = st.color || s.color;
       ctx.globalAlpha = 0.07 * st.opacity;
-      ctx.fillStyle = s.color;
+      ctx.fillStyle = color;
       ctx.fillRect(x1, yh, x2 - x1, yl - yh);
       ctx.globalAlpha = 0.5 * st.opacity;
-      ctx.strokeStyle = s.color;
-      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = color;
+      ctx.setLineDash(layerDash(st, [2, 3]));
       ctx.strokeRect(x1, yh, x2 - x1, yl - yh);
       if (x2 - x1 > 34) {
         ctx.globalAlpha = 0.9 * st.opacity;
-        ctx.fillStyle = s.color;
+        ctx.fillStyle = color;
         ctx.fillText(s.name, x1 + 2, yh - 3);
       }
     }
@@ -387,15 +415,16 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       const y = this.y(l.price);
       if (y == null || y < 0 || y > mediaSize.height) continue;
       const x0 = Math.max(0, Math.min(this.x(l.from) ?? 0, mediaSize.width - 140));
+      const color = st.color || l.color;
       ctx.globalAlpha = 0.75 * st.opacity;
-      ctx.strokeStyle = l.color;
+      ctx.strokeStyle = color;
       ctx.lineWidth = l.width * st.width;
-      ctx.setLineDash(l.dashed ? [5, 4] : []);
+      ctx.setLineDash(layerDash(st, l.dashed ? [5, 4] : []));
       ctx.beginPath(); ctx.moveTo(x0, Math.round(y) + 0.5); ctx.lineTo(mediaSize.width, Math.round(y) + 0.5); ctx.stroke();
       const text = l.label;
       const w = ctx.measureText(text).width;
       ctx.globalAlpha = Math.min(1, 0.4 + st.opacity);
-      ctx.fillStyle = l.color;
+      ctx.fillStyle = color;
       ctx.fillText(text, mediaSize.width - w - 8, y - 3);
     }
     ctx.restore();
@@ -407,9 +436,9 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
     ctx.save();
     ctx.font = "11px system-ui, sans-serif";
     for (const pat of this.auto.patterns) {
-      const color = pat.bias > 0 ? COLOR.up : pat.bias < 0 ? COLOR.down : COLOR.medium;
       const faded = pat.status === "expired" || pat.status === "failed";
       const st = this.style(pat.layer ?? "chart");
+      const color = st.color || (pat.bias > 0 ? COLOR.up : pat.bias < 0 ? COLOR.down : COLOR.medium);
       for (const l of pat.lines) {
         const a = this.xy(l.a), b0 = this.xy(l.b);
         if (!a || !b0) continue;
@@ -420,7 +449,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
         ctx.globalAlpha = (faded ? 0.35 : 0.85) * st.opacity;
         ctx.strokeStyle = color;
         ctx.lineWidth = (l.role === "path" ? 1 : l.role === "support" || l.role === "lower" ? 2 : 1.5) * st.width;
-        ctx.setLineDash(l.role === "neck" ? [6, 4] : []);
+        ctx.setLineDash(layerDash(st, l.role === "neck" ? [6, 4] : []));
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       const at = this.xy(pat.label);
@@ -462,7 +491,7 @@ export class ChartOverlay implements ISeriesPrimitive<Time> {
       if (!a || !b) continue;
       ctx.globalAlpha = 0.7 * st.opacity;
       ctx.strokeStyle = roleColor(w.points[k].label);
-      ctx.setLineDash(w.points[k].provisional ? [4, 4] : []);
+      ctx.setLineDash(layerDash(st, w.points[k].provisional ? [4, 4] : []));
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     }
     ctx.setLineDash([]);

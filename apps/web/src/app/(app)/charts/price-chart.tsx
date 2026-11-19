@@ -6,10 +6,12 @@ import {
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
 import { NO_LIVE, useLiveBar, withLive, type LiveBarStore } from "./live-bar";
-import { ChartOverlay, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
+import { ChartOverlay, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type OutputStyle, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
-export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown> };
+/** styles: per output key, the user's colour, width and dash (see OutputStyle) */
+export type ActiveIndicator = { uid: string; id: string; params: Record<string, unknown>; styles?: Record<string, OutputStyle> };
+const LINE_STYLE: Record<NonNullable<OutputStyle["dash"]>, LineStyle> = { solid: 0, dotted: 1, dashed: 2 } as Record<NonNullable<OutputStyle["dash"]>, LineStyle>;
 export type Tool = null | "hline" | ShapeKind;
 export type ChartType = "candles" | "hollow" | "heikin" | "bars" | "line" | "area";
 export type ScaleMode = "normal" | "log" | "percent";
@@ -409,7 +411,8 @@ function PriceChartView(props: Props) {
         const out = computed[f.ci]?.out;
         const v = (out?.[f.key] as unknown[] | undefined)?.[n - 1];
         if (f.kind === "histogram") {
-          const color = Array.isArray(out?.colors) ? (out.colors as string[])[n - 1] : undefined;
+          const own = computed[f.ci]?.ind.styles?.[f.key]?.color;
+          const color = !own && Array.isArray(out?.colors) ? (out.colors as string[])[n - 1] : undefined;
           if (isNum(v)) f.series.update({ time, value: v, ...(color ? { color } : {}) });
         } else if (isNum(v)) f.series.update({ time, value: v });
         else if (f.kind === "line") f.series.update({ time });
@@ -451,7 +454,7 @@ function PriceChartView(props: Props) {
       tips.set(time, list);
     };
     let pane = 0;
-    for (const [ci, { def, out }] of computed.entries()) {
+    for (const [ci, { ind, def, out }] of computed.entries()) {
       const own = def.overlay ? 0 : ++pane;
       let first: ISeriesApi<"Line"> | null = null;
       for (const o of def.outputs ?? []) {
@@ -459,16 +462,19 @@ function PriceChartView(props: Props) {
         if (!Array.isArray(values)) continue;
         // an output may draw on the price pane from an indicator in its own pane (divergence lines on price)
         const target = o.pane === "price" ? 0 : own;
-        const colors = Array.isArray(out.colors) ? (out.colors as string[]) : null;
+        const user = ind.styles?.[o.key];
+        // a colour picked by the user replaces the per-bar colours (rising/falling histogram bars)
+        const colors = !user?.color && Array.isArray(out.colors) ? (out.colors as string[]) : null;
         if (o.kind === "histogram") {
-          const h = c.addSeries(HistogramSeries, { color: o.color, priceLineVisible: false, lastValueVisible: false }, target);
+          const h = c.addSeries(HistogramSeries, { color: user?.color ?? o.color, priceLineVisible: false, lastValueVisible: false }, target);
           h.setData(bars.flatMap((b, i) => isNum(values[i]) ? [{ time: b.time as UTCTimestamp, value: values[i] as number, ...(colors?.[i] ? { color: colors[i] } : {}) }] : []));
           extra.current.push(h);
           feeds.push({ series: h, ci, key: o.key, kind: "histogram" });
         } else {
           const label = target > 0 && !o.quiet;
           const opts = {
-            color: o.color, lineWidth: (o.lineWidth ?? 1) as 1 | 2 | 3 | 4, lineStyle: (o.lineStyle ?? 0) as LineStyle, priceLineVisible: false,
+            color: user?.color ?? o.color, lineWidth: (user?.width ?? o.lineWidth ?? 1) as 1 | 2 | 3 | 4,
+            lineStyle: (user?.dash ? LINE_STYLE[user.dash] : o.lineStyle ?? 0) as LineStyle, priceLineVisible: false,
             lastValueVisible: label, crosshairMarkerVisible: false, lineVisible: !o.dots,
             pointMarkersVisible: Boolean(o.dots), title: label ? o.label : "",
           };
@@ -560,7 +566,7 @@ function PriceChartView(props: Props) {
   const legendInds = computed.map(({ ind, def, out }) => {
     const vals = (def.outputs ?? []).flatMap((o) => {
       const v = (out[o.key] as unknown[] | undefined)?.[i];
-      return isNum(v) ? [{ color: o.color, v }] : [];
+      return isNum(v) ? [{ color: ind.styles?.[o.key]?.color ?? o.color, v }] : [];
     });
     return { uid: ind.uid, name: def.name.replace(/\s*\(.*\)$/, ""), vals };
   });

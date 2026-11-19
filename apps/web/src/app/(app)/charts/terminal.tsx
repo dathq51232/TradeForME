@@ -12,7 +12,7 @@ import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
 import { createLiveBar, useLiveBar, withLive, type LiveBarStore, type LiveState } from "./live-bar";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
-import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, type LayerKey, type LayerStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
+import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, type LayerKey, type LayerStyle, type LayerDash, type LineDash, type OutputStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
 import { candlestickPatterns, chartPatterns, closeLevels, microWedges, periodCloses, sessionsBetween, sessionStatus } from "@qt/core/patterns";
 import type { TradesResponse } from "@/app/api/trades/route";
@@ -102,7 +102,70 @@ function LayerStyleControls({ k, value, onChange }: { k: LayerKey; value: LayerS
           <span>Hiện đường nối các đỉnh/đáy sóng</span>
         </label>
       )}
+      {/* Elliott has its own colour choice (Màu sóng); the others take one colour for all their lines and labels */}
+      {k !== "elliott" && (
+        <div className={row} title="Một màu cho mọi đường và nhãn của lớp này; bỏ chọn để dùng màu riêng của lớp (theo hướng tăng/giảm, theo phiên…)">
+          <span className="text-muted">Màu</span>
+          <label className="flex cursor-pointer items-center gap-1.5">
+            <input type="checkbox" checked={!!value.color} onChange={(e) => onChange({ ...value, color: e.target.checked ? "#f5d742" : "" })} />
+            <span>{value.color ? "Màu riêng" : "Theo lớp"}</span>
+          </label>
+          {value.color ? (
+            <input type="color" value={value.color} onChange={(e) => onChange({ ...value, color: e.target.value })} aria-label="Chọn màu" className="h-6 w-full cursor-pointer rounded border border-border bg-transparent p-0" />
+          ) : <span />}
+        </div>
+      )}
+      <label className={row}><span className="text-muted">Kiểu nét</span>
+        <select value={value.dash} onChange={(e) => onChange({ ...value, dash: e.target.value as LayerDash })}>
+          {LAYER_DASHES.map((d) => <option key={d.v} value={d.v}>{d.label}</option>)}
+        </select>
+        <span /></label>
       <button onClick={() => onChange(LAYER_STYLE_DEFAULT)} className="justify-self-start text-muted hover:text-foreground">↺ Mặc định</button>
+    </div>
+  );
+}
+const LAYER_DASHES: { v: LayerDash; label: string }[] = [
+  { v: "auto", label: "Mặc định của lớp" }, { v: "solid", label: "━ Liền" }, { v: "dashed", label: "╍ Đứt" }, { v: "dotted", label: "┈ Chấm" },
+];
+const LINE_DASHES: { v: LineDash; label: string }[] = [{ v: "solid", label: "━ Liền" }, { v: "dashed", label: "╍ Đứt" }, { v: "dotted", label: "┈ Chấm" }];
+const DASH_OF_LINE_STYLE: LineDash[] = ["solid", "dotted", "dashed", "dashed", "dotted"];
+const toHex = (c: string | undefined) => (c && /^#[0-9a-fA-F]{6}/.test(c) ? c.slice(0, 7) : "#4f8cff");
+
+/** Colour, width and dash of each output of one indicator; histogram and dot outputs only take a colour. */
+function OutputStyleControls({ ind, onChange }: { ind: ActiveIndicator; onChange: (key: string, s: OutputStyle | null) => void }) {
+  const outputs = BY_ID[ind.id]?.outputs ?? [];
+  if (!outputs.length) return null;
+  return (
+    <div className="grid gap-1 border-t border-border pt-2">
+      <span className="text-muted">Kiểu hiển thị</span>
+      {outputs.map((o) => {
+        const s = ind.styles?.[o.key] ?? {};
+        const lineLike = o.kind !== "histogram" && !o.dots;
+        return (
+          <div key={o.key} className="grid gap-0.5">
+            <span className="truncate" title={o.label}>{o.label}</span>
+            <div className="flex items-center gap-1.5">
+              <input type="color" value={toHex(s.color ?? o.color)} onChange={(e) => onChange(o.key, { ...s, color: e.target.value })}
+                aria-label={`Màu ${o.label}`} title="Màu" className="h-6 w-9 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0" />
+              {lineLike && (
+                <select value={s.width ?? o.lineWidth ?? 1} onChange={(e) => onChange(o.key, { ...s, width: Number(e.target.value) as OutputStyle["width"] })}
+                  aria-label={`Độ dày ${o.label}`} title="Độ dày nét" className="w-16">
+                  {[1, 2, 3, 4].map((w) => <option key={w} value={w}>{w}px</option>)}
+                </select>
+              )}
+              {lineLike && (
+                <select value={s.dash ?? DASH_OF_LINE_STYLE[o.lineStyle ?? 0] ?? "solid"} onChange={(e) => onChange(o.key, { ...s, dash: e.target.value as LineDash })}
+                  aria-label={`Kiểu nét ${o.label}`} title="Kiểu nét" className="min-w-0 flex-1">
+                  {LINE_DASHES.map((d) => <option key={d.v} value={d.v}>{d.label}</option>)}
+                </select>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {ind.styles && (
+        <button onClick={() => outputs.forEach((o) => onChange(o.key, null))} className="justify-self-start text-muted hover:text-foreground">↺ Màu và nét mặc định</button>
+      )}
     </div>
   );
 }
@@ -659,6 +722,14 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   };
   const setParam = (u: string, key: string, value: unknown) =>
     setIndicators((xs) => xs.map((x) => (x.uid === u ? { ...x, params: { ...x.params, [key]: value } } : x)));
+  /** null puts that output back to the indicator's own colour, width and dash */
+  const setOutputStyle = (u: string, key: string, s: OutputStyle | null) =>
+    setIndicators((xs) => xs.map((x) => {
+      if (x.uid !== u) return x;
+      const styles = { ...x.styles };
+      if (s) styles[key] = s; else delete styles[key];
+      return { ...x, styles: Object.keys(styles).length ? styles : undefined };
+    }));
 
   // ---------- what the chart draws ----------
   const hlines = useMemo(() => hlinePrices.map((price) => ({
@@ -1045,12 +1116,15 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
               const editable = (def?.inputs ?? []).filter((i) => ["int", "float", "select", "source"].includes(i.type));
               return (
                 <span key={ind.uid} className={`relative inline-flex items-center gap-1 rounded border border-border bg-panel-2 px-1.5 py-0.5 ${indHidden ? "opacity-50" : ""}`}>
-                  <button onClick={() => setEditing(editing === ind.uid ? null : ind.uid)} title="Sửa tham số">
+                  <button onClick={() => setEditing(editing === ind.uid ? null : ind.uid)} title="Sửa tham số, màu và kiểu nét">
+                    {(def?.outputs ?? []).slice(0, 3).map((o) => (
+                      <span key={o.key} aria-hidden className="mr-0.5 inline-block h-2 w-2 rounded-full align-middle" style={{ background: ind.styles?.[o.key]?.color ?? o.color }} />
+                    ))}
                     {def?.name.replace(/\s*\(.*\)$/, "") ?? ind.id}{paramText(ind) && <span className="text-muted"> ({paramText(ind)})</span>}
                   </button>
                   <button onClick={() => setIndicators((xs) => xs.filter((x) => x.uid !== ind.uid))} className="text-muted hover:text-down" title="Xoá">×</button>
-                  {editing === ind.uid && editable.length > 0 && (
-                    <div className="absolute left-0 top-full z-20 mt-1 grid w-56 gap-2 rounded-md border border-border bg-panel p-2 shadow-xl">
+                  {editing === ind.uid && (
+                    <div className="absolute left-0 top-full z-20 mt-1 grid w-72 gap-2 rounded-md border border-border bg-panel p-2 shadow-xl">
                       {editable.map((inp) => (
                         <label key={inp.key} className="grid gap-0.5">
                           <span className="text-muted">{inp.label}</span>
@@ -1065,6 +1139,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
                           )}
                         </label>
                       ))}
+                      <OutputStyleControls ind={ind} onChange={(k, s) => setOutputStyle(ind.uid, k, s)} />
                       <button onClick={() => setEditing(null)} className="rounded bg-accent px-2 py-1 text-white">Xong</button>
                     </div>
                   )}
