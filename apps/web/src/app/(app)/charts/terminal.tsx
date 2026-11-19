@@ -10,6 +10,7 @@ import { PanelToggle } from "@/components/panel-toggle";
 import { PatternAlertsButton } from "./pattern-alerts";
 import { TrendAlertsButton } from "./trend-alerts";
 import { MarketBrief } from "./market-brief";
+import { createLiveBar, useLiveBar, withLive, type LiveBarStore, type LiveState } from "./live-bar";
 import { PriceChart, type ActiveIndicator, type Bar, type ChartHandle, type ChartStyle, type ChartType, type PriceLineSpec, type ScaleMode, type TimedMarker, type Tool } from "./price-chart";
 import { CHART_TEMPLATES, WAVE_COLORS, LAYER_STYLE_DEFAULT, type LayerKey, type LayerStyle, NO_AUTO, SHAPE_LABEL, SHAPE_POINTS, bgFamily, isTemplate, type AutoDraw, type ChartEvent, type Shape } from "./chart-overlay";
 import { elliottWaves } from "@qt/core/elliott";
@@ -227,6 +228,50 @@ const countdown = (ms: number) => {
   return d ? `${d}n ${h}g` : h ? `${h}g ${mm}p` : `${mm}p`;
 };
 const NO_TRADES: TradesResponse = { trades: [], positions: [] };
+const NO_BARS: Bar[] = [];
+
+/**
+ * The bars with the forming candle as it was at most `ms` ago: the pattern and wave detectors scan every bar and
+ * need not rerun on each tick, nor re-render the page twice a second. A new candle or reload passes straight through.
+ */
+function useSettledBars(bars: Bar[] | undefined, live: LiveBarStore, key: string, ms: number) {
+  const [snap, setSnap] = useState<LiveState>(live.get);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const off = live.subscribe(() => {
+      if (!timer) timer = setTimeout(() => { timer = null; setSnap(live.get()); }, ms);
+    });
+    return () => { off(); if (timer) clearTimeout(timer); };
+  }, [live, ms]);
+  return useMemo(() => bars && withLive(bars, key, snap), [bars, key, snap]);
+}
+
+/** Last price and change of the open symbol, following the live candle. */
+function LivePrice({ bars, live, liveKey, digits }: { bars: Bar[]; live: LiveBarStore; liveKey: string; digits: number }) {
+  const bs = withLive(bars, liveKey, useLiveBar(live));
+  const last = bs[bs.length - 1], prev = bs[bs.length - 2];
+  if (!last) return null;
+  const chg = prev ? ((last.close - prev.close) / prev.close) * 100 : null;
+  return (
+    <span className="ml-2 font-mono text-sm">
+      {fmt(last.close, digits)}{" "}
+      {chg != null && <span className={chg >= 0 ? "text-up" : "text-down"}>{chg >= 0 ? "+" : ""}{chg.toFixed(2)}%</span>}
+    </span>
+  );
+}
+
+/** Time of the last bars load or live tick. */
+function LiveUpdated({ at, live }: { at: number | null; live: LiveBarStore }) {
+  const t = Math.max(at ?? 0, useLiveBar(live).at);
+  return t ? <span>Cập nhật {new Date(t).toLocaleTimeString("vi-VN")}</span> : null;
+}
+
+/** The market brief reads the open chart live: it alone re-renders with the forming candle. */
+function LiveBrief({ live, liveKey, bars, ...rest }: Omit<Parameters<typeof MarketBrief>[0], "bars"> & { bars: Bar[]; live: LiveBarStore; liveKey: string }) {
+  const state = useLiveBar(live);
+  const merged = useMemo(() => withLive(bars, liveKey, state), [bars, liveKey, state]);
+  return <MarketBrief bars={merged} {...rest} />;
+}
 
 export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedIn: boolean }) {
   const [symbol, setSymbol] = useState(initial.layout.symbol);
@@ -306,6 +351,10 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   }, [symbol, tf, tfInfo.bars]);
 
   useEffect(() => load(), [load]);
+  // the forming candle, outside React state (see live-bar.ts); the stream handler reads the bars it applies to
+  const [live] = useState(createLiveBar);
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
 
   // Binance spot (crypto) and futures (gold, silver, oil intraday): kline stream in the browser, no server cost.
   // Others (broker bars, Yahoo): poll the cached API; broker bars arrive every minute, so a little faster.
@@ -332,27 +381,34 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       const f = (streamFut && usdFactors.current[streamFut]) || streamFactor || 1;
       pending = { time: k.t / 1000, open: +k.o * f, high: +k.h * f, low: +k.l * f, close: +k.c * f, volume: +k.v };
     });
-    // apply at most twice a second: indicators are recomputed on every update
+    // apply at most twice a second: indicators are recomputed on every update. The forming candle goes to the live
+    // store (only the chart, price and brief re-render); page state changes only when a new candle opens.
     const t = setInterval(() => {
       if (!pending) return;
       const bar = pending; pending = null;
+      const d = dataRef.current;
+      const last = d?.bars[d.bars.length - 1];
+      if (!last || bar.time < last.time) return;
+      if (bar.time === last.time) { live.set(stream, bar); return; }
+      // candles missed while the socket was down: fetch the bars again instead of leaving a hole
+      if (bar.time > last.time + step) {
+        if (Date.now() - reloadedAt > 30_000) { reloadedAt = Date.now(); cancelLoad = load(true); }
+        return;
+      }
+      // a new candle: the one that closed keeps its last streamed values
+      const closed = live.get();
       setData((d) => {
         if (!d || !d.bars.length) return d;
-        const last = d.bars[d.bars.length - 1];
-        if (bar.time < last.time) return d;
-        // candles missed while the socket was down: fetch the bars again instead of leaving a hole
-        if (bar.time > last.time + step) {
-          if (Date.now() - reloadedAt > 30_000) { reloadedAt = Date.now(); cancelLoad = load(true); }
-          return d;
-        }
-        const bars = bar.time === last.time ? [...d.bars.slice(0, -1), bar] : [...d.bars.slice(1), bar];
-        return { ...d, bars };
+        const bs = withLive(d.bars, stream, closed);
+        const l = bs[bs.length - 1];
+        if (bar.time < l.time) return d;
+        return { ...d, bars: bar.time === l.time ? [...bs.slice(0, -1), bar] : [...bs.slice(1), bar] };
       });
       setUpdatedAt(Date.now());
     }, 500);
     let cancelLoad = () => {};
     return () => { clearInterval(t); close(); cancelLoad(); };
-  }, [stream, pollMs, load, step, streamFut, streamFactor]);
+  }, [stream, pollMs, load, step, streamFut, streamFactor, live]);
 
   // ---------- copy-trade activity and economic calendar for this symbol ----------
   useEffect(() => {
@@ -475,7 +531,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const saveDrawing = async (next: { hlines: number[]; shapes: Shape[] }, undoable = true) => {
     const current = drawings[symbol];
     if (undoable) {
-      const h = (history.current[symbol] ??= []);
+      const h = history.current[symbol] ?? (history.current[symbol] = []);
       h.push({ hlines: current?.hlines ?? [], shapes: current?.shapes ?? [] });
       if (h.length > HISTORY) h.shift();
     }
@@ -581,7 +637,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
       setAlerts((xs) => xs.filter((x) => x.id !== a.id));
       return setNotice("");
     }
-    const cur = data?.bars[data.bars.length - 1]?.close;
+    const now = data ? withLive(data.bars, stream ?? "", live.get()) : [];
+    const cur = now[now.length - 1]?.close;
     if (!cur) return;
     const op = price >= cur ? "above" : "below";
     const { data: auth } = await supabase.auth.getUser();
@@ -628,16 +685,17 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
   const nextHigh = clock ? calendar.find((e) => e.impact === "high" && e.time * 1000 > clock) : undefined;
   const recent = clock ? calendar.filter((e) => e.time * 1000 <= clock && e.time * 1000 > clock - 6 * 3600_000 && e.impact === "high") : [];
 
-  const bars = data?.bars ?? [];
-  const last = bars[bars.length - 1];
-  const prev = bars[bars.length - 2];
-  const chg = last && prev ? ((last.close - prev.close) / prev.close) * 100 : null;
+  // closed candles plus the forming one as of the last new candle or reload; live ticks are merged in by the
+  // subscribers (LivePrice, LiveBrief, PriceChart) and, every 5 s, by the detectors
+  const bars = data?.bars ?? NO_BARS;
+  const streamKey = stream ?? "";
   const filtered = MENU.filter((d) => !query || d.name.toLowerCase().includes(query.toLowerCase()) || d.id.includes(query.toLowerCase()));
   const notInList = Object.keys(SYMBOLS).filter((s) => !watchlist.includes(s));
   const activeTool = TOOLS.find((t) => t.id === tool);
 
   // ---------- automatic chart reading (all in the browser, on the loaded bars) ----------
-  const rawBars = data?.bars;
+  // re-read at most every 5 s while the forming candle streams; at once on a new candle, symbol or timeframe
+  const rawBars = useSettledBars(data?.bars, live, streamKey, 5000);
   const found = useMemo(() => {
     const bs = rawBars ?? [];
     const periodLen = { day: 86400, week: 7 * 86400, month: 28 * 86400 };
@@ -747,7 +805,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             );
           })}
         </ul>
-        <MarketBrief symbol={symbol} tfLabel={tfInfo.label} bars={bars} digits={info.digits} elliott={found.elliott} quotes={quotes}
+        <LiveBrief live={live} liveKey={streamKey} symbol={symbol} tfLabel={tfInfo.label} bars={bars} digits={info.digits} elliott={found.elliott} quotes={quotes}
           onPick={(m) => { setSymbol(m); setTool(null); setSelected(null); }} />
       </aside>
 
@@ -756,12 +814,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <div className="mr-2">
             <span className="text-base font-semibold">{symbol}</span>
-            {last && (
-              <span className="ml-2 font-mono text-sm">
-                {fmt(last.close, info.digits)}{" "}
-                {chg != null && <span className={chg >= 0 ? "text-up" : "text-down"}>{chg >= 0 ? "+" : ""}{chg.toFixed(2)}%</span>}
-              </span>
-            )}
+            <LivePrice bars={bars} live={live} liveKey={streamKey} digits={info.digits} />
           </div>
           <div className="flex rounded-md border border-border">
             {TIMEFRAMES.map((t) => (
@@ -1110,7 +1163,8 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
           <PriceChart ref={chartApi} bars={bars} digits={info.digits} barSeconds={tfSeconds(tf)} indicators={indHidden ? NO_INDICATORS : indicators}
             chartType={view.type} scaleMode={view.scale} magnet={view.magnet} style={view.style}
             hlines={hlines} shapes={shapes} hidden={hidden} selected={selected} events={events} auto={indHidden ? NO_AUTO : autoDraw} tradeMarkers={chartMarkers} tradeLines={tradeLines} patternText={!textHidden}
-            tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key} />
+            tool={tool} onAddLine={addLine} onAddShape={addShape} onSelect={setSelected} onChangeShape={changeShape} viewKey={key}
+            live={live} liveKey={streamKey} />
           {loading && <div className="absolute inset-0 grid place-items-center bg-background/60 text-sm text-muted">Đang tải {symbol}…</div>}
           {!loading && data?.error && (
             <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-down">{data.error}</div>
@@ -1130,7 +1184,7 @@ export function ChartTerminal({ initial, signedIn }: { initial: Initial; signedI
             </span>
           )}
           {data?.source && <span>Nguồn: {data.source}</span>}
-          {updatedAt && <span>Cập nhật {new Date(updatedAt).toLocaleTimeString("vi-VN")}</span>}
+          <LiveUpdated at={updatedAt} live={live} />
           {data?.note && <span className="text-warn">{data.note}</span>}
           {overlays.trades && signedIn && (trades.trades.length > 0 || trades.positions.length > 0) && (
             <span>Lệnh copy 14 ngày: {trades.trades.filter((t) => t.kind === "open").length} lệnh mở · {trades.positions.length} vị thế đang mở</span>

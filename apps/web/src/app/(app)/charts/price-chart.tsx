@@ -5,6 +5,7 @@ import {
   type IChartApi, type ISeriesApi, type IPriceLine, type UTCTimestamp, type SeriesMarker, type Time, type SeriesType, type LineStyle,
 } from "lightweight-charts";
 import { BY_ID, compute } from "@qt/core/indicators";
+import { NO_LIVE, useLiveBar, withLive, type LiveBarStore } from "./live-bar";
 import { ChartOverlay, SHAPE_POINTS, STATUS_TEXT, TimeIndex, chartTheme, luminance, type ChartTheme, type AutoDraw, type ChartStyle, type HandlePart, type ChartEvent, type Pt, type Shape, type ShapeKind } from "./chart-overlay";
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
@@ -66,6 +67,29 @@ function BarCountdown({ open, step }: { open: number; step: number }) {
   return <span className="text-muted" title="Thời gian còn lại của nến hiện tại">⏳ {h ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`}</span>;
 }
 
+/** An indicator output drawn as one series, and where its values come from (computed[ci].out[key]). */
+type Feed = { series: ISeriesApi<"Line" | "Histogram">; ci: number; key: string; kind: "line" | "histogram" | "segment" };
+type Built = { deps: unknown[]; bars: Bar[]; marks: string; feeds: Feed[] };
+type Computed = { out: Record<string, unknown> }[];
+
+/**
+ * What a tick of the forming candle cannot update in place: the indicator markers (their count and the newest
+ * one) and whether each segment output (trendlines) has a value on the last bar, which starts or ends a segment.
+ */
+function markSignature(computed: Computed, n: number) {
+  const parts: string[] = [];
+  for (const { out } of computed) {
+    for (const k of ["markers", "priceMarkers"]) {
+      const list = out[k];
+      if (!Array.isArray(list)) continue;
+      const m = list[list.length - 1] as { time?: number; text?: string; position?: string } | undefined;
+      parts.push(`${list.length}${m ? `${m.time}${m.text ?? ""}${m.position ?? ""}` : ""}`);
+    }
+    for (const v of Object.values(out)) if (Array.isArray(v) && v.length === n) parts.push(isNum(v[n - 1]) ? "1" : "0");
+  }
+  return parts.join("|");
+}
+
 type Props = {
   bars: Bar[];
   digits: number;
@@ -94,6 +118,9 @@ type Props = {
   onChangeShape: (shape: Shape) => void;
   /** Bumps when the symbol/timeframe changes, so the view refits instead of keeping the old zoom. */
   viewKey: string;
+  /** The forming candle from the live stream, merged over the last bar here so only the chart re-renders per tick. */
+  live?: LiveBarStore;
+  liveKey?: string;
   ref?: Ref<ChartHandle>;
 };
 
@@ -101,7 +128,13 @@ type Props = {
  * Price series (several styles) + indicators (overlay or own pane) + horizontal price lines + drawings, economic
  * events and copy-trade activity, on Lightweight Charts v5. The library's attribution logo stays on (licence).
  */
-export function PriceChart(props: Props) {
+export function PriceChart({ live: liveStore = NO_LIVE, liveKey = "", ...rest }: Props) {
+  const liveState = useLiveBar(liveStore);
+  const bars = useMemo(() => withLive(rest.bars, liveKey, liveState), [rest.bars, liveKey, liveState]);
+  return <PriceChartView {...rest} bars={bars} />;
+}
+
+function PriceChartView(props: Props) {
   const { bars, digits, barSeconds, chartType, scaleMode, style, indicators, hlines, shapes, hidden, selected, events, auto, tradeMarkers, tradeLines, tool, viewKey, ref, patternText = true } = props;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -113,6 +146,8 @@ export function PriceChart(props: Props) {
   const posLines = useRef<IPriceLine[]>([]);
   const markers = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
   const fittedFor = useRef("");
+  // what the last full build drew, so a tick of the forming candle can update it in place
+  const built = useRef<Built | null>(null);
   const points = useRef<Pt[]>([]);
   const live = useRef(props);
   useEffect(() => { live.current = props; });
@@ -122,7 +157,10 @@ export function PriceChart(props: Props) {
   const [tip, setTip] = useState<{ time: number; x: number; y: number; items: Tip[] } | null>(null);
 
   const display = useMemo(() => (chartType === "heikin" ? heikinAshi(bars) : bars), [bars, chartType]);
-  const index = useMemo(() => new TimeIndex(bars.map((b) => b.time), barSeconds), [bars, barSeconds]);
+  // bar times only change with a new candle, symbol or timeframe, not when the forming candle ticks
+  const shape = bars.length ? `${bars.length}:${bars[0].time}:${bars[bars.length - 1].time}` : "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on `shape`: the times are the same on a live tick
+  const index = useMemo(() => new TimeIndex(bars.map((b) => b.time), barSeconds), [shape, barSeconds]);
   // background, grid, text and border colours (a template's or a custom background's)
   const theme = useMemo(() => chartTheme(style), [style]);
   const computed = useMemo(() => indicators.flatMap((ind) => {
@@ -349,8 +387,40 @@ export function PriceChart(props: Props) {
     const c = chart.current, s = main.current;
     if (!c || !s) return;
     const line = chartType === "line" || chartType === "area";
-    s.setData(display.map((b) => (line ? { time: b.time as UTCTimestamp, value: b.close } : { ...b, time: b.time as UTCTimestamp })));
+    const point = (b: Bar) => (line ? { time: b.time as UTCTimestamp, value: b.close } : { ...b, time: b.time as UTCTimestamp });
+    // a candle colour that would vanish into the background (white on light, black on dark) turns grey here
+    const visible = (color: string) => Math.abs(luminance(color) - luminance(theme.bg)) < 0.2 ? (style.bg === "dark" ? "#6b7280" : "#9aa4b2") : color;
+    const volUp = withAlpha(visible(style.up), 0.45), volDown = withAlpha(visible(style.down), 0.45);
+    const volPoint = (b: Bar) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? volUp : volDown });
+
+    // Only the forming candle moved (the live stream, twice a second): update the last point of each series in
+    // place. Rebuilding every series and pane on each tick is what made the chart stutter.
+    const n = bars.length;
+    const deps: unknown[] = [s, index, chartType, viewKey, style.volume, style.up, style.down, style.bg, theme, patternText, digits,
+      JSON.stringify(tradeMarkers), JSON.stringify(auto.patterns), indicators, computed.length];
+    const marks = markSignature(computed, n);
+    const prev = built.current;
+    if (prev && n > 1 && prev.bars.length === n && prev.bars[n - 2] === bars[n - 2] && prev.bars[n - 1].time === bars[n - 1].time
+      && prev.marks === marks && deps.every((d, k) => Object.is(d, prev.deps[k]))) {
+      const time = bars[n - 1].time as UTCTimestamp;
+      s.update(point(display[n - 1]));
+      vol.current?.update(volPoint(bars[n - 1]));
+      for (const f of prev.feeds) {
+        const out = computed[f.ci]?.out;
+        const v = (out?.[f.key] as unknown[] | undefined)?.[n - 1];
+        if (f.kind === "histogram") {
+          const color = Array.isArray(out?.colors) ? (out.colors as string[])[n - 1] : undefined;
+          if (isNum(v)) f.series.update({ time, value: v, ...(color ? { color } : {}) });
+        } else if (isNum(v)) f.series.update({ time, value: v });
+        else if (f.kind === "line") f.series.update({ time });
+      }
+      built.current = { ...prev, bars };
+      return;
+    }
+
+    s.setData(display.map(point));
     overlay.current.update({ index });
+    const feeds: Feed[] = [];
 
     // volume bars along the bottom fifth of the price pane, on their own hidden scale
     if (style.volume) {
@@ -358,10 +428,7 @@ export function PriceChart(props: Props) {
         vol.current = c.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false }, 0);
         c.priceScale("vol", 0).applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
       }
-      // a candle colour that would vanish into the background (white on light, black on dark) turns grey here
-      const visible = (color: string) => Math.abs(luminance(color) - luminance(theme.bg)) < 0.2 ? (style.bg === "dark" ? "#6b7280" : "#9aa4b2") : color;
-      const up = withAlpha(visible(style.up), 0.45), down = withAlpha(visible(style.down), 0.45);
-      vol.current.setData(bars.map((b) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? up : down })));
+      vol.current.setData(bars.map(volPoint));
     } else if (vol.current) {
       c.removeSeries(vol.current);
       vol.current = null;
@@ -384,7 +451,7 @@ export function PriceChart(props: Props) {
       tips.set(time, list);
     };
     let pane = 0;
-    for (const { def, out } of computed) {
+    for (const [ci, { def, out }] of computed.entries()) {
       const own = def.overlay ? 0 : ++pane;
       let first: ISeriesApi<"Line"> | null = null;
       for (const o of def.outputs ?? []) {
@@ -397,6 +464,7 @@ export function PriceChart(props: Props) {
           const h = c.addSeries(HistogramSeries, { color: o.color, priceLineVisible: false, lastValueVisible: false }, target);
           h.setData(bars.flatMap((b, i) => isNum(values[i]) ? [{ time: b.time as UTCTimestamp, value: values[i] as number, ...(colors?.[i] ? { color: colors[i] } : {}) }] : []));
           extra.current.push(h);
+          feeds.push({ series: h, ci, key: o.key, kind: "histogram" });
         } else {
           const label = target > 0 && !o.quiet;
           const opts = {
@@ -419,6 +487,9 @@ export function PriceChart(props: Props) {
             const l = c.addSeries(LineSeries, opts, target);
             l.setData(data ?? bars.map((b, i) => isNum(values[i]) ? { time: b.time as UTCTimestamp, value: values[i] as number } : { time: b.time as UTCTimestamp }));
             extra.current.push(l);
+            // a segment follows the forming candle only if it reaches the last bar
+            if (!data) feeds.push({ series: l, ci, key: o.key, kind: "line" });
+            else if (data === runs[runs.length - 1] && data[data.length - 1].time === bars[n - 1].time) feeds.push({ series: l, ci, key: o.key, kind: "segment" });
             if (target > 0 && !first) first = l;
           }
           if (target > 0 && o === def.outputs?.[0] && first) for (const lv of def.levels ?? []) first.createPriceLine({ price: lv, color: theme.border, lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
@@ -455,7 +526,8 @@ export function PriceChart(props: Props) {
       c.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 12 });
       fittedFor.current = viewKey;
     }
-  }, [bars, display, index, computed, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg, theme, patternText, auto.patterns, digits]);
+    built.current = { deps, bars, marks, feeds };
+  }, [bars, display, index, computed, indicators, chartType, tradeMarkers, viewKey, style.volume, style.up, style.down, style.bg, theme, patternText, auto.patterns, digits]);
 
   useEffect(() => { overlay.current.update({ shapes, hidden, selected }); }, [shapes, hidden, selected]);
   useEffect(() => { overlay.current.update({ events }); }, [events]);
