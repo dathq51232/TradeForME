@@ -24,6 +24,7 @@ export const TIMEFRAMES = [
   { tf: "1m", label: "1m", bars: 720 },
   { tf: "5m", label: "5m", bars: 600 },
   { tf: "15m", label: "15m", bars: 600 },
+  { tf: "30m", label: "30m", bars: 600 },
   { tf: "1h", label: "1H", bars: 720 },
   { tf: "4h", label: "4H", bars: 500 },
   { tf: "1D", label: "1D", bars: 750 },
@@ -32,7 +33,7 @@ export const TIMEFRAMES = [
 export const TF_IDS = TIMEFRAMES.map((t) => t.tf);
 
 /** Cache lifetime for a bars response, by timeframe (seconds). Short: the last candle is the live price. */
-export const cacheSeconds = (tf) => ({ "1m": 5, "5m": 10, "15m": 15, "1h": 20, "4h": 30 })[tf] ?? 60;
+export const cacheSeconds = (tf) => ({ "1m": 5, "5m": 10, "15m": 15, "30m": 15, "1h": 20, "4h": 30 })[tf] ?? 60;
 
 // ---------- Binance ----------
 export const BINANCE_NATIVE = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1D", "3D", "1W", "1M"];
@@ -173,4 +174,4 @@ export function chartSymbol(brokerSymbol) {
 }
 
 /** Bar length in seconds for a timeframe id. */
-export const tfSeconds = (tf) => ({ "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800 })[tf] ?? 3600;
+export const tfSeconds = (tf) => ({ "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1D": 86400, "1W": 604800 })[tf] ?? 3600;

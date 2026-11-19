@@ -11,7 +11,11 @@ type Depth = { gross: number; full: boolean; filledUsd: number };
 export type ArbRow = {
   base: string; buy: Leg; sell: Leg; gross: number; volUsd: number; exchanges: number; age: number;
   suspect: boolean; suspects: string[]; depth?: Record<string, Depth>; depthError?: string;
+  /** exchanges listing a USDT perpetual of the coin (missing on scans from before futures were read) */
+  futures?: string[];
 };
+type PerpLeg = { ex: string; native: string; price: number; volUsd: number; funding: number | null; funding8h: number | null; intervalH: number; nextFunding: number | null };
+export type PerpRow = { base: string; long: PerpLeg; short: PerpLeg; gross: number; volUsd: number; exchanges: number; funding8h: number | null; suspect: boolean };
 export type PumpRow = {
   base: string; native: string; price: number; chg5m: number; chg15m: number; chg60m: number; volRatio: number;
   tradesRatio: number; takerBuy: number; fromPeak: number; score: number; stage: "pumping" | "topping" | "dumping" | "volume" | null;
@@ -26,13 +30,16 @@ export type RadarData = {
   now: number; updatedAt: string | null; arbitrage: ArbRow[]; pumps: PumpRow[]; listings: ListingRow[];
   status: Record<string, { ok: boolean; pairs?: number; error?: string }>;
   rates: { USDT: number; USDC: number; source?: { USDT: string } } | null; settings: Settings;
+  futures: { arbitrage: PerpRow[]; status: Record<string, { ok: boolean; contracts?: number; error?: string }> };
 };
 
 export const DEFAULT_FEES: Record<string, number> = { BINANCE: 0.1, OKX: 0.1, BYBIT: 0.1, KRAKEN: 0.4, KUCOIN: 0.1, GATE: 0.1, COINBASE: 0.6 };
 const EX_NAME: Record<string, string> = { BINANCE: "Binance", OKX: "OKX", BYBIT: "Bybit", KRAKEN: "Kraken", KUCOIN: "KuCoin", GATE: "Gate", COINBASE: "Coinbase" };
 const exName = (x: string) => EX_NAME[x] ?? x;
 const SIZES = ["100", "1000", "10000"];
-const TABS = [["arbitrage", "Chênh lệch giá"], ["pumps", "Bơm giá"], ["listings", "Niêm yết mới"], ["settings", "Cảnh báo"]] as const;
+/** Usual futures taker fees at the base tier (%), one side; a perpetual gap is opened and closed: four fills. */
+const FUTURES_FEES: Record<string, number> = { BINANCE: 0.05, BYBIT: 0.055, OKX: 0.05, GATE: 0.05, KUCOIN: 0.06 };
+const TABS = [["arbitrage", "Chênh lệch spot"], ["futures", "Chênh lệch futures"], ["pumps", "Bơm giá"], ["listings", "Niêm yết mới"], ["settings", "Cảnh báo"]] as const;
 type Tab = (typeof TABS)[number][0];
 
 const pct = (v: number | null | undefined, d = 2) => (v == null || !Number.isFinite(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`);
@@ -81,6 +88,7 @@ export function RadarView({ data, tab: initial }: { data: RadarData; tab?: strin
         </p>
       )}
       {tab === "arbitrage" && <Arbitrage data={data} />}
+      {tab === "futures" && <Futures data={data} />}
       {tab === "pumps" && <Pumps data={data} />}
       {tab === "listings" && <Listings data={data} />}
       {tab === "settings" && <SettingsForm s={data.settings} />}
@@ -115,18 +123,20 @@ function Arbitrage({ data }: { data: RadarData }) {
   const [size, setSize] = useState("1000");
   const [minNet, setMinNet] = useState("0");
   const [showSuspect, setShowSuspect] = useState(false);
+  const [hedgeOnly, setHedgeOnly] = useState(false);
   const fee = (r: ArbRow) => (fees[r.buy.ex] ?? 0.1) + (fees[r.sell.ex] ?? 0.1);
   const rows = useMemo(() => data.arbitrage
     .filter((r) => showSuspect || !r.suspect)
+    .filter((r) => !hedgeOnly || (r.futures?.length ?? 0) > 0)
     .map((r) => {
       const d = r.depth?.[size];
       return { ...r, net: r.gross - fee(r), slip: d ? d.gross - fee(r) : null, full: d?.full ?? null, filled: d?.filledUsd ?? null };
     })
     .filter((r) => (r.slip ?? r.net) >= Number(minNet || -Infinity)),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [data.arbitrage, size, minNet, showSuspect, fees]);
+  [data.arbitrage, size, minNet, showSuspect, hedgeOnly, fees]);
   const get = useMemo(() => (r: (typeof rows)[number], k: string) =>
-    k === "buy" ? r.buy.ex : k === "sell" ? r.sell.ex : (r as unknown as Record<string, number | string | null>)[k], []);
+    k === "buy" ? r.buy.ex : k === "sell" ? r.sell.ex : k === "futures" ? (r.futures?.length ?? -1) : (r as unknown as Record<string, number | string | null>)[k], []);
   const { sorted, head } = useSort(rows, "slip", get);
 
   return (
@@ -139,17 +149,24 @@ function Arbitrage({ data }: { data: RadarData }) {
           <select value={size} onChange={(e) => setSize(e.target.value)} className="rounded border border-border bg-background px-1.5 py-0.5">
             {SIZES.map((s) => <option key={s} value={s}>${Number(s).toLocaleString("en-US")}</option>)}
           </select></label>
+        <label className="flex items-center gap-1.5" title="Chỉ coin có hợp đồng vĩnh cửu: mua spot xong có thể short futures để giữ khoản chênh trong lúc chuyển coin">
+          <input type="checkbox" checked={hedgeOnly} onChange={(e) => setHedgeOnly(e.target.checked)} /> Chỉ coin có futures</label>
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={showSuspect} onChange={(e) => setShowSuspect(e.target.checked)} /> Hiện cặp đáng ngờ</label>
       </div>
     }>
+      <p className="mb-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+        Đây là chênh lệch <b>spot</b>: muốn ăn được phải mua ở sàn rẻ, chuyển coin sang sàn đắt rồi bán. Lãi ròng ở đây <b>chưa trừ phí rút coin</b>
+        (phí mạng, thường vài đô: nuốt hết khoản chênh với lệnh nhỏ) và không tính <b>thời gian chuyển</b> (vài phút đến vài chục phút, giá có thể chạy mất).
+        Cách an toàn hơn: có sẵn tiền ở cả hai sàn và mua/bán cùng lúc, hoặc short hợp đồng vĩnh cửu (cột Futures) ngay khi mua spot để khoá khoản chênh trong lúc chuyển.
+      </p>
       {sorted.length ? (
         <div className="-m-4 overflow-x-auto">
-          <table className="w-full min-w-[980px] text-sm">
+          <table className="w-full min-w-[1080px] text-sm">
             <thead className="border-b border-border">
               <tr>
                 {head("base", "Coin", false)}{head("buy", "Mua trên (giá bán, $)", false)}{head("sell", "Bán trên (giá mua, $)", false)}
                 {head("gross", "Gộp")}{head("net", "Sau phí")}{head("slip", `Sau trượt giá ($${Number(size).toLocaleString("en-US")})`)}
-                {head("volUsd", "KL 24h (bên thấp)")}{head("exchanges", "Số sàn")}
+                {head("volUsd", "KL 24h (bên thấp)")}{head("exchanges", "Số sàn")}{head("futures", "Futures", false)}
               </tr>
             </thead>
             <tbody>
@@ -173,6 +190,11 @@ function Arbitrage({ data }: { data: RadarData }) {
                   </td>
                   <td className={`${td} text-right font-mono`}>{money(r.volUsd)}</td>
                   <td className={`${td} text-right`}>{r.exchanges}</td>
+                  <td className={`${td} text-xs`}>
+                    {r.futures == null ? <span className="text-muted">—</span>
+                      : r.futures.length ? <span title={`Có hợp đồng vĩnh cửu USDT trên: ${r.futures.map(exName).join(", ")}`}>{r.futures.map(exName).join(", ")}</span>
+                      : <span title="Không sàn nào trong 5 sàn có hợp đồng vĩnh cửu cho coin này: không phòng hộ được trong lúc chuyển"><Badge tone="warn">không có</Badge></span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -187,7 +209,88 @@ function Arbitrage({ data }: { data: RadarData }) {
   );
 }
 
+// ---------- perpetual futures ----------
+const until = (t: number | null, now: number) => {
+  if (!t) return "—";
+  const m = Math.max(0, Math.round((t - now) / 60_000));
+  return m >= 60 ? `${Math.floor(m / 60)}g ${m % 60}p` : `${m}p`;
+};
+function Futures({ data }: { data: RadarData }) {
+  const [minNet, setMinNet] = useState("0");
+  const [showSuspect, setShowSuspect] = useState(false);
+  const rows = useMemo(() => data.futures.arbitrage
+    .filter((r) => showSuspect || !r.suspect)
+    .map((r) => ({ ...r, net: r.gross - 2 * ((FUTURES_FEES[r.long.ex] ?? 0.06) + (FUTURES_FEES[r.short.ex] ?? 0.06)) }))
+    .filter((r) => r.net >= Number(minNet || -Infinity)),
+  [data.futures.arbitrage, minNet, showSuspect]);
+  const get = useMemo(() => (r: (typeof rows)[number], k: string) =>
+    k === "long" ? r.long.ex : k === "short" ? r.short.ex : (r as unknown as Record<string, number | string | null>)[k], []);
+  const { sorted, head } = useSort(rows, "net", get);
+  const fund = (l: PerpLeg) => (l.funding == null ? "—" : `${l.funding >= 0 ? "+" : ""}${l.funding.toFixed(4)}% / ${l.intervalH}g`);
+  return (
+    <Panel title={`Chênh lệch futures (${rows.length})`} action={
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <span className="flex flex-wrap items-center gap-1">
+          {Object.entries(data.futures.status).sort(([a], [b]) => a.localeCompare(b)).map(([ex, s]) => (
+            <span key={ex} title={s.ok ? `${s.contracts} hợp đồng` : s.error}><Badge tone={s.ok ? "up" : "down"}>{exName(ex)}</Badge></span>
+          ))}
+        </span>
+        <label className="flex items-center gap-1.5">Lãi ròng tối thiểu
+          <input type="number" step="0.1" value={minNet} onChange={(e) => setMinNet(e.target.value)}
+            className="w-16 rounded border border-border bg-background px-1.5 py-0.5 font-mono" />%</label>
+        <label className="flex items-center gap-1.5"><input type="checkbox" checked={showSuspect} onChange={(e) => setShowSuspect(e.target.checked)} /> Hiện cặp đáng ngờ</label>
+      </div>
+    }>
+      {sorted.length ? (
+        <div className="-m-4 overflow-x-auto">
+          <table className="w-full min-w-[1100px] text-sm">
+            <thead className="border-b border-border">
+              <tr>
+                {head("base", "Coin", false)}{head("long", "Long trên (giá bán, USDT)", false)}{head("short", "Short trên (giá mua, USDT)", false)}
+                {head("gross", "Gộp")}{head("net", "Sau phí mở + đóng")}{head("funding8h", "Funding ròng / 8g")}
+                <th className={`${th} whitespace-nowrap`}>Funding từng bên</th>{head("volUsd", "KL 24h (bên thấp)")}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.slice(0, 300).map((r) => (
+                <tr key={`${r.base}:${r.long.ex}:${r.short.ex}:${r.suspect}`} className={`border-b border-border/60 ${r.suspect ? "opacity-70" : ""}`}>
+                  <td className={`${td} whitespace-nowrap`}>
+                    <span className="font-medium">{r.base}</span>
+                    {r.suspect && <span className="ml-1.5" title="Giá lệch xa các sàn khác: thường là hợp đồng của token khác trùng tên, hoặc hợp đồng sắp huỷ niêm yết"><Badge tone="warn">đáng ngờ</Badge></span>}
+                  </td>
+                  <td className={td}><div>{exName(r.long.ex)} <span className="text-xs text-muted">{r.long.native}</span></div><div className="font-mono text-xs">{price(r.long.price)}</div></td>
+                  <td className={td}><div>{exName(r.short.ex)} <span className="text-xs text-muted">{r.short.native}</span></div><div className="font-mono text-xs">{price(r.short.price)}</div></td>
+                  <td className={`${td} text-right font-mono`}>{pct(r.gross, 3)}</td>
+                  <td className={`${td} text-right font-mono ${toneOf(r.net)}`}>{pct(r.net, 3)}</td>
+                  <td className={`${td} text-right font-mono ${r.funding8h == null ? "text-muted" : toneOf(r.funding8h)}`}
+                    title="Funding nhận ở bên short trừ funding trả ở bên long, quy về mỗi 8 giờ. Dương: giữ lệnh càng lâu càng được thêm; âm: giữ càng lâu càng mất.">
+                    {r.funding8h == null ? "—" : pct(r.funding8h, 4)}
+                    {r.funding8h != null && r.funding8h < 0 && -3 * r.funding8h >= Math.max(r.net, 0) && (
+                      <div title="Funding âm: giữ cả hai lệnh 24 giờ (3 kỳ 8 giờ) là mất hết khoản chênh sau phí, hoặc hơn"><Badge tone="down">funding nuốt lãi trong 1 ngày</Badge></div>
+                    )}
+                  </td>
+                  <td className={`${td} text-xs text-muted`}>
+                    <div title={`Kỳ funding kế tiếp sau ${until(r.long.nextFunding, data.now)}`}>Long {exName(r.long.ex)}: {fund(r.long)}</div>
+                    <div title={`Kỳ funding kế tiếp sau ${until(r.short.nextFunding, data.now)}`}>Short {exName(r.short.ex)}: {fund(r.short)}</div>
+                  </td>
+                  <td className={`${td} text-right font-mono`}>{money(r.volUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : <Empty>{Object.keys(data.futures.status).length ? `Không có khoản chênh futures nào trên ${minNet}% sau phí lúc này.` : "Chưa có dữ liệu futures: radar-cron cần chạy bản mới (có quét hợp đồng vĩnh cửu)."}</Empty>}
+      <p className="mt-3 text-xs text-muted">
+        Hợp đồng vĩnh cửu USDT, cả hai bên đều ký quỹ nên không phải chuyển coin giữa hai sàn: long ở sàn rẻ, short ở sàn đắt, đóng cả hai khi giá hai sàn gặp nhau.
+        &quot;Sau phí&quot; trừ 4 lần phí taker futures thường gặp (mở và đóng mỗi bên; Binance 0,05%, Bybit 0,055%, OKX 0,05%, Gate 0,05%, KuCoin 0,06%), chưa tính trượt giá.
+        Funding trả theo kỳ (1, 4 hoặc 8 giờ tuỳ sàn và coin) và đổi liên tục. Rủi ro còn lại: giá hai sàn có thể lệch thêm trước khi gặp nhau (cần đủ ký quỹ ở cả hai bên để không bị thanh lý), và hợp đồng của coin ít thanh khoản dễ bị kéo giá.
+      </p>
+    </Panel>
+  );
+}
+
 // ---------- pumps ----------
+
 const STAGE: Record<string, [string, Tone]> = {
   pumping: ["Đang bơm", "up"], topping: ["Tạo đỉnh", "warn"], dumping: ["Đang xả", "down"], volume: ["Khối lượng tăng", "muted"],
 };

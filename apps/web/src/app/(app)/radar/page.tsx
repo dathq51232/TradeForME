@@ -17,7 +17,8 @@ async function Radar({ searchParams }: { searchParams: PageProps<"/radar">["sear
   const { supabase, userId } = await requireUser("/radar");
   const sp = await searchParams;
   const [{ data: snap }, { data: listings }, { data: settings }] = await Promise.all([
-    supabase.from("radar_snapshot").select("arbitrage, pumps, status, rates, updated_at").maybeSingle(),
+    // "*": the page keeps working before the migration that adds the futures column is applied
+    supabase.from("radar_snapshot").select("*").maybeSingle(),
     supabase.from("radar_listings").select("id, exchange, native, base, quote, kind, status, opens_at, elsewhere, seen_at")
       .order("seen_at", { ascending: false }).limit(200),
     supabase.from("radar_settings").select("alerts_on, arb_alert, pump_alert, listing_alert, min_vol, fees").eq("user_id", userId).maybeSingle(),
@@ -29,6 +30,7 @@ async function Radar({ searchParams }: { searchParams: PageProps<"/radar">["sear
     pumps: snap?.pumps ?? [],
     status: snap?.status ?? {},
     rates: snap?.rates ?? null,
+    futures: { arbitrage: snap?.futures?.arbitrage ?? [], status: snap?.futures?.status ?? {} },
     listings: listings ?? [],
     settings: {
       alerts_on: settings?.alerts_on ?? false,
@@ -42,7 +44,7 @@ async function Radar({ searchParams }: { searchParams: PageProps<"/radar">["sear
   return (
     <>
       <PageHeader title="Radar thị trường"
-        sub="Chênh lệch giá giữa 7 sàn crypto, coin đang bị bơm và coin mới niêm yết. Quét mỗi phút từ dữ liệu công khai; không đặt lệnh nào." />
+        sub="Chênh lệch giá spot giữa 7 sàn crypto, chênh lệch hợp đồng vĩnh cửu giữa 5 sàn, coin đang bị bơm và coin mới niêm yết. Quét mỗi phút từ dữ liệu công khai; không đặt lệnh nào." />
       {sp.msg && <Notice tone="up">{String(sp.msg)}</Notice>}
       {sp.error && <Notice tone="down">{String(sp.error)}</Notice>}
       <RadarView data={data} tab={String(sp.tab ?? "")} />

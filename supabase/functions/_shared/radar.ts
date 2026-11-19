@@ -1,11 +1,13 @@
 // POST /radar-cron — market radar, called every minute by pg_cron (through pg_net) with header x-qt-cron.
-// Three scanners over the free public APIs of seven crypto exchanges:
+// Three scanners over the free public APIs of seven crypto exchanges (and the perpetuals of five of them):
 //   1. Arbitrage: a coin's best ask on one exchange against its best bid on another, in USD, plus what the
 //      gap is worth after walking both order books for $100, $1,000 and $10,000. Fees are left to the
 //      reader (each user sets theirs), so rows carry the gross figure.
 //   2. Pumps: Binance USDT pairs whose price and volume jump together, scored 0-100 and staged from
 //      1-minute bars. Prices from earlier runs (radar_state) pick the candidates.
 //   3. Listings: every 2 minutes, each exchange's pair list against the one stored last time.
+//   4. Perpetuals: which coins have a USDT perpetual where (to hedge a spot gap during a transfer), and the gap
+//      between one coin's perpetuals on two exchanges, with funding (both legs on margin, nothing to transfer).
 // Results go to radar_snapshot / radar_listings for the /radar page; radar_notify() turns them into
 // notifications for the users who switched alerts on, and returns the Telegram messages to send.
 // Read-only market data: nothing here places an order. Runtime-neutral (Web APIs only), like market-cron.
@@ -214,6 +216,203 @@ export async function mapLimit<T, R>(items: T[], k: number, fn: (x: T, i: number
   return out;
 }
 
+// ---------- perpetual futures ----------
+// USDT-margined perpetuals on the exchanges with free bulk APIs. Two uses:
+//   - which exchanges list a perpetual for a coin: a spot gap can then be hedged (buy spot, short the perpetual)
+//     while the coins move between exchanges, so the price can't run away during the transfer;
+//   - perpetual against perpetual on two exchanges: both legs on margin, nothing to transfer. Funding is paid every
+//     few hours by the long side to the short side (or back when negative), so it is shown per 8 hours.
+export type Perp = {
+  ex: string; native: string; base: string; bid: number; ask: number; volUsd: number;
+  /** % per funding period, null when the exchange did not say */ funding: number | null;
+  intervalH: number; nextFunding: number | null;
+};
+export const PERP_EXCHANGES = ["BINANCE", "BYBIT", "OKX", "GATE", "KUCOIN"];
+
+/** "1000PEPE" on one exchange is PEPE in lots of 1000 on another: the coin and the factor its price is divided by. */
+export function perpBase(raw: string) {
+  const b = canon(raw);
+  const m = /^(1000000|100000|10000|1000|1M)([A-Z].*)$/.exec(b);
+  if (!m) return { base: b, mult: 1 };
+  return { base: canon(m[2]), mult: m[1] === "1M" ? 1e6 : Number(m[1]) };
+}
+const perp = (ex: string, native: string, rawBase: string, bid: number, ask: number, volUsd: number, funding: number | null, intervalH: number, nextFunding: number | null): Perp[] => {
+  const { base, mult } = perpBase(rawBase);
+  if (!usable(base, "USDT") || !(bid > 0 && ask >= bid)) return [];
+  return [{ ex, native, base, bid: bid / mult, ask: ask / mult, volUsd, funding, intervalH: intervalH > 0 ? intervalH : 8, nextFunding: nextFunding && nextFunding > 0 ? nextFunding : null }];
+};
+const pct = (x: unknown) => (x === "" || x == null || !Number.isFinite(Number(x)) ? null : Number(x) * 100);
+
+export const parsePerp = {
+  /** bookTicker + premiumIndex + 24hr ticker + fundingInfo (only the symbols whose interval is not 8 h) */
+  binance: (books: unknown, premium: unknown, day: unknown, info: unknown): Perp[] => {
+    const prem = new Map(arr(premium).map((r) => [String(r.symbol), r]));
+    const vol = new Map(arr(day).map((r) => [String(r.symbol), n(r.quoteVolume)]));
+    const hours = new Map(arr(info).map((r) => [String(r.symbol), n(r.fundingIntervalHours)]));
+    return arr(books).flatMap((r) => {
+      const sym = String(r.symbol);
+      if (!sym.endsWith("USDT")) return []; // dated contracts end in _YYMMDD
+      const p = prem.get(sym);
+      return perp("BINANCE", sym, sym.slice(0, -4), n(r.bidPrice), n(r.askPrice), vol.get(sym) ?? 0, pct(p?.lastFundingRate), hours.get(sym) ?? 8, n(p?.nextFundingTime));
+    });
+  },
+  bybit: (j: Raw): Perp[] => arr((j.result as Raw)?.list).flatMap((r) => {
+    const sym = String(r.symbol);
+    if (!sym.endsWith("USDT")) return [];
+    return perp("BYBIT", sym, sym.slice(0, -4), n(r.bid1Price), n(r.ask1Price), n(r.turnover24h), pct(r.fundingRate), n(r.fundingIntervalHour), n(r.nextFundingTime));
+  }),
+  /** SWAP tickers (volume in coins) + funding-rate?instId=ANY (period = next - this funding time) */
+  okx: (tickers: Raw, funding: Raw): Perp[] => {
+    const fr = new Map(arr(funding.data).map((r) => [String(r.instId), r]));
+    return arr(tickers.data).flatMap((r) => {
+      const id = String(r.instId);
+      const m = /^(.+)-USDT-SWAP$/.exec(id);
+      if (!m) return [];
+      const f = fr.get(id);
+      const hours = f ? (n(f.nextFundingTime) - n(f.fundingTime)) / 3_600_000 : 8;
+      return perp("OKX", id, m[1], n(r.bidPx), n(r.askPx), n(r.volCcy24h) * n(r.last), pct(f?.fundingRate), Number.isFinite(hours) ? hours : 8, n(f?.fundingTime));
+    });
+  },
+  gate: (j: unknown): Perp[] => arr(j).flatMap((r) => {
+    const m = /^(.+)_USDT$/.exec(String(r.contract));
+    if (!m) return [];
+    return perp("GATE", String(r.contract), m[1], n(r.highest_bid), n(r.lowest_ask), n(r.volume_24h_quote), pct(r.funding_rate), 8, null);
+  }),
+  /** active contracts (funding, period, turnover) + all tickers (best bid / ask) */
+  kucoin: (contracts: Raw, tickers: Raw): Perp[] => {
+    const tk = new Map(arr(tickers.data).map((r) => [String(r.symbol), r]));
+    return arr(contracts.data).flatMap((c) => {
+      const sym = String(c.symbol);
+      if (c.quoteCurrency !== "USDT" || !sym.endsWith("USDTM")) return [];
+      const t = tk.get(sym);
+      return perp("KUCOIN", sym, String(c.baseCurrency), n(t?.bestBidPrice), n(t?.bestAskPrice), n(c.turnoverOf24h),
+        pct(c.fundingFeeRate), n(c.fundingRateGranularity) / 3_600_000, n(c.nextFundingRateDateTime));
+    });
+  },
+};
+
+const PERP_FETCH: Record<string, (f: Fetch) => Promise<Perp[]>> = {
+  BINANCE: async (f) => {
+    const h = "https://fapi.binance.com/fapi/v1";
+    const [books, premium, day, info] = await Promise.all([
+      getJson(f, `${h}/ticker/bookTicker`), getJson(f, `${h}/premiumIndex`), getJson(f, `${h}/ticker/24hr`),
+      getJson(f, `${h}/fundingInfo`).catch(() => []),
+    ]);
+    return parsePerp.binance(books, premium, day, info);
+  },
+  BYBIT: async (f) => parsePerp.bybit(await getJson(f, "https://api.bybit.com/v5/market/tickers?category=linear")),
+  OKX: async (f) => {
+    const [t, fr] = await Promise.all([
+      getJson(f, "https://www.okx.com/api/v5/market/tickers?instType=SWAP"),
+      getJson(f, "https://www.okx.com/api/v5/public/funding-rate?instId=ANY").catch(() => ({} as Raw)),
+    ]);
+    return parsePerp.okx(t, fr);
+  },
+  GATE: async (f) => parsePerp.gate(await getJson(f, "https://api.gateio.ws/api/v4/futures/usdt/tickers")),
+  KUCOIN: async (f) => {
+    const [c, t] = await Promise.all([
+      getJson(f, "https://api-futures.kucoin.com/api/v1/contracts/active"),
+      getJson(f, "https://api-futures.kucoin.com/api/v1/allTickers"),
+    ]);
+    return parsePerp.kucoin(c, t);
+  },
+};
+
+export type PerpLeg = { ex: string; native: string; price: number; volUsd: number; funding: number | null; funding8h: number | null; intervalH: number; nextFunding: number | null };
+export type PerpRow = {
+  base: string; long: PerpLeg; short: PerpLeg; gross: number; volUsd: number; exchanges: number;
+  /** funding the trade earns per 8 h, in %: received on the short leg minus paid on the long leg (null if unknown) */
+  funding8h: number | null; suspect: boolean;
+};
+
+/**
+ * Perpetual against perpetual: per coin, go long where the ask is lowest and short where the bid is highest
+ * (gross %, before fees). Prices more than 15% off the coin's median, or a gap over 10%, are flagged "suspect"
+ * (a different token under the same ticker, a contract being delisted) and kept apart, as for spot.
+ */
+export function perpArbitrage(perps: Perp[], { minVol = 100_000 } = {}): PerpRow[] {
+  const byBase = new Map<string, Perp[]>();
+  for (const p of perps) if (p.volUsd >= minVol) byBase.set(p.base, [...(byBase.get(p.base) ?? []), p]);
+  const leg = (p: Perp, side: "bid" | "ask"): PerpLeg => ({
+    ex: p.ex, native: p.native, price: p[side], volUsd: p.volUsd, funding: p.funding,
+    funding8h: p.funding == null ? null : (p.funding * 8) / p.intervalH, intervalH: p.intervalH, nextFunding: p.nextFunding,
+  });
+  const best = (pool: Perp[]) => {
+    let top: { l: Perp; s: Perp; gross: number } | null = null;
+    for (const l of pool) for (const s of pool) {
+      if (l.ex === s.ex) continue;
+      const gross = (s.bid / l.ask - 1) * 100;
+      if (!top || gross > top.gross) top = { l, s, gross };
+    }
+    return top;
+  };
+  const out: PerpRow[] = [];
+  for (const [base, rows] of byBase) {
+    if (new Set(rows.map((r) => r.ex)).size < 2) continue;
+    const mid = median(rows.map((r) => (r.bid + r.ask) / 2));
+    const odd = new Set(rows.filter((r) => Math.abs((r.bid + r.ask) / 2 / mid - 1) > 0.15));
+    let pool = rows.filter((r) => !odd.has(r));
+    let t = best(pool);
+    if (t && t.gross > 10) { odd.add(t.l); odd.add(t.s); pool = pool.filter((r) => !odd.has(r)); t = best(pool); }
+    const push = (x: NonNullable<typeof t>, suspect: boolean) => {
+      const l = leg(x.l, "ask"), s = leg(x.s, "bid");
+      out.push({
+        base, long: l, short: s, gross: x.gross, volUsd: Math.min(x.l.volUsd, x.s.volUsd), exchanges: rows.length, suspect,
+        funding8h: l.funding8h == null || s.funding8h == null ? null : s.funding8h - l.funding8h,
+      });
+    };
+    if (t) push(t, false);
+    const all = odd.size ? best(rows) : null;
+    if (all && (odd.has(all.l) || odd.has(all.s))) push(all, true);
+  }
+  return out.sort((a, b) => b.gross - a.gross);
+}
+
+/**
+ * Gate's tickers carry the funding rate but not its period (1, 4 or 8 h), and its full contract list is over a
+ * megabyte: the period is read per contract, only for the Gate legs of the top rows, and funding8h redone.
+ */
+async function gateIntervals(f: Fetch, rows: PerpRow[]) {
+  const legs = rows.flatMap((r) => [r.long, r.short]).filter((l) => l.ex === "GATE");
+  const names = [...new Set(legs.map((l) => l.native))];
+  const hours = new Map<string, { h: number; next: number | null }>();
+  await mapLimit(names, 6, async (name) => {
+    try {
+      const c = await getJson(f, `https://api.gateio.ws/api/v4/futures/usdt/contracts/${q(name)}`);
+      const h = n(c.funding_interval) / 3600;
+      if (h > 0) hours.set(name, { h, next: n(c.funding_next_apply) > 0 ? n(c.funding_next_apply) * 1000 : null });
+    } catch { /* keep 8 h */ }
+  });
+  for (const l of legs) {
+    const g = hours.get(l.native);
+    if (!g) continue;
+    l.intervalH = g.h; l.nextFunding = g.next;
+    l.funding8h = l.funding == null ? null : (l.funding * 8) / g.h;
+  }
+  for (const r of rows) r.funding8h = r.long.funding8h == null || r.short.funding8h == null ? null : r.short.funding8h - r.long.funding8h;
+}
+
+/** All perpetuals, which exchanges list each coin, and the perpetual gaps. An exchange that fails is noted, not fatal. */
+export async function scanPerps(f: Fetch, minVol = 100_000) {
+  const status: Record<string, { ok: boolean; contracts?: number; error?: string }> = {};
+  const all: Perp[] = [];
+  await Promise.all(PERP_EXCHANGES.map(async (ex) => {
+    try {
+      const rows = await PERP_FETCH[ex](f);
+      all.push(...rows);
+      status[ex] = { ok: true, contracts: rows.length };
+    } catch (e) {
+      status[ex] = { ok: false, error: (e as Error).message };
+    }
+  }));
+  const coins: Record<string, string[]> = {};
+  for (const p of all) if (!(coins[p.base] ??= []).includes(p.ex)) coins[p.base].push(p.ex);
+  for (const k of Object.keys(coins)) coins[k].sort();
+  const rows = perpArbitrage(all, { minVol }).slice(0, 300);
+  await gateIntervals(f, rows.slice(0, 60));
+  return { arbitrage: rows, coins, status };
+}
+
 // ---------- arbitrage ----------
 // USDT and USDC aren't exactly a dollar: their USD price comes from the exchanges that quote them in USD.
 // Without it a coin in USDT on one side and USD on the other is off by that gap, which looks like a trade and isn't.
@@ -232,6 +431,8 @@ type Leg = { ex: string; native: string; quote: string; price: number; volUsd: n
 export type ArbRow = {
   base: string; buy: Leg; sell: Leg; gross: number; volUsd: number; exchanges: number; age: number;
   suspect: boolean; suspects: string[]; depth?: Record<string, { gross: number; full: boolean; filledUsd: number }>; depthError?: string;
+  /** exchanges listing a USDT perpetual of the coin, to hedge while the coins move between exchanges */
+  futures?: string[];
 };
 type Quote = { ex: string; native: string; quote: string; bid: number; ask: number; volUsd: number; age: number; suspect?: boolean };
 
@@ -432,6 +633,7 @@ export async function scan(f: Fetch, state: State, now = Date.now(), minVol = 10
       status[ex] = { ok: false, error: (e as Error).message };
     }
   };
+  const perpsP = scanPerps(f, minVol);
   await Promise.all(EXCHANGES.filter((x) => x !== "COINBASE").map(fetchEx));
   let rates = usdRates(snaps);
   const vol = new Map<string, number>();
@@ -447,6 +649,8 @@ export async function scan(f: Fetch, state: State, now = Date.now(), minVol = 10
   rates = usdRates(snaps);
 
   const arb = await withDepth(f, arbitrage(snaps, { now: Date.now(), minVol, rates }).slice(0, 300), rates);
+  const perps = await perpsP;
+  for (const r of arb) r.futures = perps.coins[r.base] ?? [];
   const binanceOk = snaps.BINANCE?.rows ?? [];
   const p = binanceOk.length
     ? await scanPumps(f, binanceOk, state.history ?? {}, state.pumpSymbols ?? [], { now, minVol, usdt: rates.USDT })
@@ -475,7 +679,8 @@ export async function scan(f: Fetch, state: State, now = Date.now(), minVol = 10
     next.known = known;
     next.listingsAt = now;
   }
-  return { snapshot: { arbitrage: arb, pumps: p.pumps, status, rates }, listings, state: next };
+  const futures = { arbitrage: perps.arbitrage, status: perps.status, coins: Object.keys(perps.coins).length };
+  return { snapshot: { arbitrage: arb, pumps: p.pumps, status, rates, futures }, listings, state: next };
 }
 
 /** Candidates for alerts; radar_notify() applies each user's thresholds, fees and a 30-minute cooldown. */
@@ -520,7 +725,7 @@ export async function radarCron(req: Request, deps: RadarDeps) {
   }
   return json(200, {
     exchanges: Object.fromEntries(Object.entries(snapshot.status).map(([k, v]) => [k, v.ok ? v.pairs : v.error])),
-    arbitrage: snapshot.arbitrage.length, pumps: snapshot.pumps.length, listings: listings.length,
+    arbitrage: snapshot.arbitrage.length, futures: snapshot.futures.arbitrage.length, pumps: snapshot.pumps.length, listings: listings.length,
     telegram: messages.length, sent,
   });
 }

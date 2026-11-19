@@ -3,7 +3,7 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, rpcAdapter } from "../../tests/pglite.mjs";
 import { route, type Db } from "./ea.ts";
-import { radarCron, arbitrage, usdRates, fill, withDepth, pumpMetrics, diffListings, parse, type Ticker, type Rates } from "./radar.ts";
+import { radarCron, arbitrage, usdRates, fill, withDepth, pumpMetrics, diffListings, parse, parsePerp, perpBase, perpArbitrage, type Ticker, type Rates, type Perp } from "./radar.ts";
 
 const ONE: Rates = { USD: 1, USDT: 1, USDC: 1, source: { USDT: "assumed", USDC: "assumed" } };
 const row = (native: string, base: string, quote: string, bid: number, ask: number, vol = 1e7): Ticker =>
@@ -113,6 +113,68 @@ test("exchange parsers name pairs the same way everywhere", () => {
   assert.equal(parse.bybitInstruments({ result: { list: [{ symbol: "AUSDT", baseCoin: "A", quoteCoin: "USDT", status: "PreLaunch" }] } })[0].status, "pre");
 });
 
+// ---------- perpetuals ----------
+const perpRow = (ex: string, base: string, bid: number, ask: number, funding: number | null = 0.01, intervalH = 8, volUsd = 1e7): Perp =>
+  ({ ex, native: `${base}-${ex}`, base, bid, ask, volUsd, funding, intervalH, nextFunding: null });
+
+test("perpetual names: lots of 1000 are the same coin, at a thousandth of the price", () => {
+  assert.deepEqual(perpBase("1000PEPE"), { base: "PEPE", mult: 1000 });
+  assert.deepEqual(perpBase("1MBABYDOGE"), { base: "BABYDOGE", mult: 1e6 });
+  assert.deepEqual(perpBase("1INCH"), { base: "1INCH", mult: 1 });
+  assert.deepEqual(perpBase("XBT"), { base: "BTC", mult: 1 });
+  const [p] = parsePerp.bybit({ result: { list: [{ symbol: "1000PEPEUSDT", bid1Price: "0.0101", ask1Price: "0.0102", turnover24h: "5e6", fundingRate: "0.0001", fundingIntervalHour: "4", nextFundingTime: "1700000000000" }] } });
+  assert.equal(p.base, "PEPE");
+  assert.ok(Math.abs(p.bid - 0.0000101) < 1e-12);
+  assert.ok(Math.abs((p.funding ?? 0) - 0.01) < 1e-12); // 0.0001 = 0.01 %
+  assert.equal(p.intervalH, 4);
+});
+
+test("perpetual parsers: USDT perpetuals only, funding in %, the period of each exchange", () => {
+  const b = parsePerp.binance(
+    [{ symbol: "SOLUSDT", bidPrice: "100", askPrice: "100.1" }, { symbol: "SOLUSDT_261226", bidPrice: "101", askPrice: "101.1" }, { symbol: "SOLUSDC", bidPrice: "100", askPrice: "100.1" }],
+    [{ symbol: "SOLUSDT", lastFundingRate: "0.0002", nextFundingTime: 1700000000000 }],
+    [{ symbol: "SOLUSDT", quoteVolume: "9e6" }],
+    [{ symbol: "SOLUSDT", fundingIntervalHours: 4 }],
+  );
+  assert.deepEqual(b.map((x) => [x.native, x.base, x.funding, x.intervalH, x.volUsd]), [["SOLUSDT", "SOL", 0.02, 4, 9e6]]);
+  const o = parsePerp.okx(
+    { data: [{ instId: "SOL-USDT-SWAP", bidPx: "100", askPx: "100.1", volCcy24h: "1000", last: "100" }, { instId: "SOL-USD-SWAP", bidPx: "1", askPx: "1", volCcy24h: "1", last: "1" }] },
+    { data: [{ instId: "SOL-USDT-SWAP", fundingRate: "-0.0001", fundingTime: "1700000000000", nextFundingTime: "1700014400000" }] },
+  );
+  assert.deepEqual(o.map((x) => [x.base, x.funding, x.intervalH, x.volUsd]), [["SOL", -0.01, 4, 100_000]]);
+  const g = parsePerp.gate([{ contract: "SOL_USDT", highest_bid: "100", lowest_ask: "100.1", volume_24h_quote: "1e6", funding_rate: "0.0001" }]);
+  assert.equal(g[0].base, "SOL");
+  const k = parsePerp.kucoin(
+    { data: [{ symbol: "XBTUSDTM", baseCurrency: "XBT", quoteCurrency: "USDT", fundingFeeRate: 0.0001, fundingRateGranularity: 28800000, turnoverOf24h: 5e8, nextFundingRateDateTime: 1700000000000 }] },
+    { data: [{ symbol: "XBTUSDTM", bestBidPrice: "60000", bestAskPrice: "60001" }] },
+  );
+  assert.deepEqual(k.map((x) => [x.base, x.intervalH, x.bid]), [["BTC", 8, 60000]]);
+});
+
+test("perpetual gap: long the cheapest ask, short the dearest bid; funding per 8 h, received minus paid", () => {
+  const rows = perpArbitrage([
+    perpRow("BINANCE", "SOL", 100, 100.1, 0.01, 8),
+    perpRow("BYBIT", "SOL", 101, 101.1, 0.02, 4), // 0.02 % every 4 h = 0.04 % per 8 h
+    perpRow("OKX", "SOL", 100.5, 100.6, null),
+    perpRow("GATE", "THIN", 1, 1.01, 0, 8, 10), // too little volume
+  ]);
+  assert.equal(rows.length, 1);
+  const r = rows[0];
+  assert.equal(r.long.ex, "BINANCE");
+  assert.equal(r.short.ex, "BYBIT");
+  assert.ok(Math.abs(r.gross - (101 / 100.1 - 1) * 100) < 1e-9);
+  assert.ok(Math.abs((r.short.funding8h ?? 0) - 0.04) < 1e-12);
+  assert.ok(Math.abs((r.funding8h ?? 0) - (0.04 - 0.01)) < 1e-12);
+});
+
+test("perpetual gap: a price far from the others is a separate, flagged row", () => {
+  const rows = perpArbitrage([
+    perpRow("BINANCE", "ABC", 10, 10.01), perpRow("BYBIT", "ABC", 10.02, 10.03), perpRow("OKX", "ABC", 10.01, 10.02), perpRow("GATE", "ABC", 15, 15.1),
+  ]);
+  // biggest gap first: the flagged one (to GATE) before the clean one (BINANCE -> BYBIT)
+  assert.deepEqual(rows.map((r) => [r.long.ex, r.short.ex, r.suspect]), [["BINANCE", "GATE", true], ["BINANCE", "BYBIT", false]]);
+});
+
 // ---------- the whole run, against the migrations ----------
 let pg: Awaited<ReturnType<typeof openDb>>;
 let db: Db;
@@ -133,6 +195,12 @@ const fakeFetch = async (url: string, init?: RequestInit) => {
   if (at.endsWith("/api/v5/market/tickers")) return Response.json({ data: [{ instId: "SOL-USDT", bidPx: "103", askPx: "103.1", last: "103", volCcy24h: "1e8" }] });
   if (at.endsWith("/api/v5/public/instruments")) return Response.json({ data: okxPairs });
   if (at.endsWith("/api/v5/market/books")) return Response.json({ data: [{ bids: [["103", "1000"]], asks: [["103.1", "1000"]] }] });
+  if (at.endsWith("/fapi/v1/ticker/bookTicker")) return Response.json([{ symbol: "SOLUSDT", bidPrice: "100.2", askPrice: "100.3" }]);
+  if (at.endsWith("/fapi/v1/premiumIndex")) return Response.json([{ symbol: "SOLUSDT", lastFundingRate: "0.0001", nextFundingTime: 1 }]);
+  if (at.endsWith("/fapi/v1/ticker/24hr")) return Response.json([{ symbol: "SOLUSDT", quoteVolume: "5e8" }]);
+  if (at.endsWith("/fapi/v1/fundingInfo")) return Response.json([]);
+  if (u.host === "api.gateio.ws" && at.endsWith("/futures/usdt/tickers")) return Response.json([{ contract: "SOL_USDT", highest_bid: "101", lowest_ask: "101.1", volume_24h_quote: "5e8", funding_rate: "0.0003" }]);
+  if (u.host === "api.gateio.ws" && at.includes("/futures/usdt/contracts/")) return Response.json({ funding_interval: 14400, funding_next_apply: 1700000000 });
   if (u.host === "api.bybit.com") return new Response("blocked", { status: 403 });
   return new Response("not found", { status: 404 });
 };
@@ -165,6 +233,15 @@ test("a run stores the scan, notes blocked exchanges, and alerts users who asked
   assert.equal(s.arbitrage[0].base, "SOL");
   assert.ok(Math.abs(s.arbitrage[0].depth["1000"].gross - (103 / 100.1 - 1) * 100) < 1e-6);
   assert.equal(s.status.OKX.ok, true);
+  // perpetuals: SOL on Binance and Gate (OKX's fake tickers are spot, Bybit is blocked, KuCoin answers 404)
+  assert.equal(r.body.futures, 1);
+  const fut = (await pg.query("select futures from public.radar_snapshot")).rows[0] as { futures: { arbitrage: { base: string; long: { ex: string }; short: { ex: string; intervalH: number }; funding8h: number }[]; status: Record<string, { ok: boolean }> } };
+  assert.equal(fut.futures.arbitrage[0].base, "SOL");
+  assert.deepEqual([fut.futures.arbitrage[0].long.ex, fut.futures.arbitrage[0].short.ex], ["BINANCE", "GATE"]);
+  assert.equal(fut.futures.arbitrage[0].short.intervalH, 4); // read from Gate's contract
+  assert.ok(Math.abs(fut.futures.arbitrage[0].funding8h - (0.06 - 0.01)) < 1e-9);
+  assert.equal(fut.futures.status.BYBIT.ok, false);
+  assert.deepEqual((s.arbitrage[0] as unknown as { futures: string[] }).futures, ["BINANCE", "GATE"]);
   // 2.9% gross - 0.2% fees >= Alice's 2%; Bob has alerts off
   const notes = (await pg.query("select user_id, title from public.notifications where link = '/radar'")).rows as { user_id: string; title: string }[];
   assert.deepEqual(notes.map((n) => n.user_id), [ALICE]);
